@@ -1,0 +1,5 @@
+{
+  "name": "V11 PRO - Phân Tích Cổ Phiếu & SSI WebSocket",
+  "description": "Hệ thống phân tích định lượng Minervini, VCP, dòng tiền ngành, bản đồ nhiệt HOSE, danh mục và backtest chiến lược Hybrid kết nối dữ liệu SSI Realtime.",
+  "requestFramePermissions": []
+}
