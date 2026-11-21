@@ -13,9 +13,12 @@ import {
   addDaysToDateStr,
   clearAllCaches,
   fetchBatchOhlcvSsi,
-  fetchSsiOhlcvCached,
-  fetchSsiStockList,
+  fetchExchangeBoardWithFallback,
+  fetchFullStockCatalog,
+  fetchSsiOhlcvWithMetaCached,
   getSsiWsManager,
+  isSsiRestBlocked,
+  isVnMarketHours,
   vnNowParts,
   vnTodayStr,
   type LiveTick,
@@ -141,17 +144,37 @@ function resampleBars(bars: OhlcvBar[], tf: 'D' | 'W' | 'M'): OhlcvBar[] {
 
 app.get('/api/status', async (_req, res) => {
   try {
-    const stocks = await fetchSsiStockList('hose');
+    const catalog = await fetchFullStockCatalog();
     const parts = vnNowParts();
     res.json({
       connected: wsMgr.isConnected,
-      hoseCount: Object.keys(stocks).length,
+      hoseCount: catalog.counts.HOSE,
+      hnxCount: catalog.counts.HNX,
+      upcomCount: catalog.counts.UPCOM,
+      totalCount: catalog.counts.total,
+      dataSource: isSsiRestBlocked() ? 'VNDirect' : catalog.source,
+      ssiRestBlocked: isSsiRestBlocked(),
       vnClock: parts.clock,
       today: parts.dateStr,
       lastUpdate: wsMgr.lastUpdate || parts.hms,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Status error' });
+  }
+});
+
+app.get('/api/stocks', async (req, res) => {
+  try {
+    const refresh = req.query.refresh === '1';
+    const catalog = await fetchFullStockCatalog(refresh);
+    res.json({
+      list: catalog.list,
+      counts: catalog.counts,
+      industries: catalog.industries,
+      source: catalog.source,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Stocks catalog error' });
   }
 });
 
@@ -189,22 +212,28 @@ app.get('/api/indices-live', async (req, res) => {
       selectedIndices.map(async (sym) => {
         let bars1m: OhlcvBar[] = [];
         let barsD: OhlcvBar[] = [];
+        let source: 'SSI' | 'VNDirect' = 'VNDirect';
 
         if (idxDate === today) {
           const cached = wsMgr.getIndexData(sym);
           bars1m = cached.bars1m;
           barsD = cached.barsD;
+          source = cached.source;
         } else {
-          [bars1m, barsD] = await Promise.all([
-            fetchSsiOhlcvCached(sym, addDaysToDateStr(idxDate, -6), idxDate, '1', refresh),
-            fetchSsiOhlcvCached(sym, addDaysToDateStr(idxDate, -25), idxDate, 'D', refresh),
+          const [res1m, resD] = await Promise.all([
+            fetchSsiOhlcvWithMetaCached(sym, addDaysToDateStr(idxDate, -6), idxDate, '1', refresh),
+            fetchSsiOhlcvWithMetaCached(sym, addDaysToDateStr(idxDate, -25), idxDate, 'D', refresh),
           ]);
+          bars1m = res1m.bars;
+          barsD = resD.bars;
+          source = bars1m.length ? res1m.source : resD.source;
         }
 
         let lastPx = 0;
         let delta = 0;
         let pct = 0;
         let vol = 0;
+        let resolvedDate = idxDate;
         let tradeDateStr = formatDdMm(idxDate);
         let prevClose: number | null = null;
         let plotSeries: OhlcvBar[] = [];
@@ -213,6 +242,7 @@ app.get('/api/indices-live', async (req, res) => {
         const mCut = bars1m.filter((b) => b.date <= idxDate);
         if (mCut.length) {
           const actualDate = mCut[mCut.length - 1].date;
+          resolvedDate = actualDate;
           tradeDateStr = formatDdMm(actualDate);
           let day1m = mCut.filter((b) => b.date === actualDate);
           if (actualDate === today) {
@@ -228,20 +258,21 @@ app.get('/api/indices-live', async (req, res) => {
           if (dCut.length) {
             isIntradayMode = false;
             plotSeries = dCut.slice(-30);
-            tradeDateStr = formatDdMm(dCut[dCut.length - 1].date);
+            resolvedDate = dCut[dCut.length - 1].date;
+            tradeDateStr = formatDdMm(resolvedDate);
             if (dCut.length >= 2) prevClose = dCut[dCut.length - 2].close;
           }
         }
 
         if (plotSeries.length) {
-          if (idxDate === today && liveTicks[sym]) {
+          if (idxDate === today && isVnMarketHours() && liveTicks[sym]) {
             plotSeries = patchLiveCandle(plotSeries, liveTicks[sym], isIntradayMode);
           }
           lastPx = plotSeries[plotSeries.length - 1].close;
           vol = isIntradayMode
             ? plotSeries.reduce((s, b) => s + b.volume, 0)
             : plotSeries[plotSeries.length - 1].volume;
-          if (idxDate === today && liveTicks[sym]?.volume) {
+          if (idxDate === today && isVnMarketHours() && liveTicks[sym]?.volume) {
             vol = liveTicks[sym].volume;
           }
           if (prevClose && prevClose > 0) {
@@ -269,6 +300,8 @@ app.get('/api/indices-live', async (req, res) => {
         return {
           symbol: sym,
           tradeDateStr,
+          resolvedDate,
+          source,
           lastPx,
           delta,
           pct,
@@ -280,92 +313,73 @@ app.get('/api/indices-live', async (req, res) => {
       })
     );
 
-    res.json({ indices: results, syncTime: wsMgr.lastUpdate || vnNowParts().hms });
+    const sources = [...new Set(results.map((r) => r.source))];
+    res.json({
+      indices: results,
+      dataSource: sources.join(' / ') || 'VNDirect',
+      syncTime: wsMgr.lastUpdate || vnNowParts().hms,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Indices live error' });
   }
 });
 
-// 1.2 TREEMAP
+// 1.2 TREEMAP (Supports HOSE, HNX, UPCOM with automatic EOD fallback)
 app.get('/api/treemap', async (req, res) => {
   try {
     const today = vnTodayStr();
     const tmDate = String(req.query.date || today);
     const sizeMode = String(req.query.sizeMode || 'value'); // 'value' | 'volume'
+    const rawExchange = String(req.query.exchange || 'HOSE').toUpperCase().trim();
+    const exchange: 'HOSE' | 'HNX' | 'UPCOM' =
+      rawExchange === 'HNX' || rawExchange === 'UPCOM' ? rawExchange : 'HOSE';
     const refresh = req.query.refresh === '1';
 
-    if (tmDate !== today) {
-      const allSyms = Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)
-        .filter(([, ind]) => ind !== 'Chỉ số')
-        .map(([s]) => s);
-      const rawMap = await fetchBatchOhlcvSsi(allSyms, addDaysToDateStr(tmDate, -10), tmDate, 'D');
-      const rows = [];
-      let cntUp = 0;
-      let cntDown = 0;
-      let cntRef = 0;
+    const [catalog, boardRes] = await Promise.all([
+      fetchFullStockCatalog(),
+      fetchExchangeBoardWithFallback(exchange, tmDate, refresh),
+    ]);
 
-      for (const [sym, bars] of Object.entries(rawMap)) {
-        const sub = bars.filter((b) => b.date <= tmDate);
-        if (sub.length >= 2) {
-          const cNow = sub[sub.length - 1].close;
-          const cPrev = sub[sub.length - 2].close;
-          const vol = sub[sub.length - 1].volume;
-          if (vol > 0 && cPrev > 0) {
-            const pct = ((cNow - cPrev) / cPrev) * 100;
-            if (pct > 0) cntUp++;
-            else if (pct < 0) cntDown++;
-            else cntRef++;
-            const ind = isPennyStock(sym) ? 'Penny' : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || 'Khác';
-            rows.push({
-              symbol: sym,
-              industry: ind,
-              sizeVal: sizeMode === 'value' ? Number(((cNow * vol) / 1e6).toFixed(2)) : Math.round(vol),
-              pct: Number(pct.toFixed(2)),
-              price: Number(cNow.toFixed(2)),
-            });
-          }
-        }
-      }
-      return res.json({
-        mode: 'historical',
-        syncTime: tmDate,
-        counts: { up: cntUp, down: cntDown, ref: cntRef },
-        rows,
-      });
-    }
-
-    let liveBoard = refresh ? await wsMgr.refreshBoardNow() : wsMgr.getLiveBoard();
-    if (!Object.keys(liveBoard).length) {
-      liveBoard = await wsMgr.refreshBoardNow();
-    }
-
-    const rows = [];
+    const wsSnap = tmDate === today && isVnMarketHours() ? wsMgr.getSnapshot() : {};
+    const rows: {
+      symbol: string;
+      companyName: string;
+      industry: string;
+      sizeVal: number;
+      pct: number;
+      price: number;
+    }[] = [];
     let cntUp = 0;
     let cntDown = 0;
     let cntRef = 0;
 
-    for (const [sym, indRaw] of Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)) {
-      if (indRaw === 'Chỉ số') continue;
-      const item = liveBoard[sym];
-      if (!item) continue;
-      const lastPx = item.last || 0;
-      const vol = item.volume || 0;
-      const pct = item.pct || 0;
+    for (const [sym, baseItem] of Object.entries(boardRes.board)) {
+      const wsTick = wsSnap[sym];
+      const lastPx = wsTick?.last || baseItem.last || 0;
+      const vol = wsTick?.volume && wsTick.volume > 0 ? wsTick.volume : baseItem.volume || 0;
+      const pct = wsTick ? wsTick.pct : baseItem.pct || 0;
       if (lastPx <= 0 || vol <= 0) continue;
 
       if (pct > 0) cntUp++;
       else if (pct < 0) cntDown++;
       else cntRef++;
 
-      const ind = isPennyStock(sym) ? 'Penny' : indRaw;
+      const meta = catalog.stocks[sym];
+      const ind = isPennyStock(sym)
+        ? 'Penny'
+        : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || meta?.industry || 'Khác';
+
+      const valBil =
+        baseItem.value_bil && baseItem.value_bil > 0 && !wsTick
+          ? baseItem.value_bil
+          : (lastPx * vol) / 1e6;
       const sizeVal =
-        sizeMode === 'value'
-          ? Number((item.value_bil || (lastPx * vol) / 1e6).toFixed(2))
-          : Math.round(vol);
+        sizeMode === 'value' ? Number(valBil.toFixed(2)) : Math.round(vol);
 
       if (sizeVal > 0) {
         rows.push({
           symbol: sym,
+          companyName: meta?.companyName || sym,
           industry: ind,
           sizeVal,
           pct: Number(pct.toFixed(2)),
@@ -375,9 +389,14 @@ app.get('/api/treemap', async (req, res) => {
     }
 
     res.json({
-      mode: 'live',
-      syncTime: wsMgr.lastUpdate || vnNowParts().hms,
+      exchange,
+      mode: boardRes.mode,
+      source: boardRes.source,
+      tradeDate: boardRes.tradeDate,
+      tradeDateDisplay: formatDdMmYyyy(boardRes.tradeDate),
+      syncTime: boardRes.syncTime,
       counts: { up: cntUp, down: cntDown, ref: cntRef },
+      totalSymbols: rows.length,
       rows,
     });
   } catch (err: any) {
@@ -852,16 +871,54 @@ app.post('/api/minervini', async (req, res) => {
   }
 });
 
-// 3.3 TOP GAINERS
+// 3.3 TOP GAINERS (Supports HOSE, HNX, UPCOM + full industry catalog)
 app.post('/api/gainers', async (req, res) => {
   try {
     const today = vnTodayStr();
     const startDate = String(req.body?.startDate || addDaysToDateStr(today, -30));
     const endDate = String(req.body?.endDate || today);
     const industry = String(req.body?.industry || 'Tất cả ngành');
+    const rawEx = String(req.body?.exchange || 'HOSE').toUpperCase().trim();
+    const exchange: 'HOSE' | 'HNX' | 'UPCOM' | 'ALL' =
+      rawEx === 'HNX' || rawEx === 'UPCOM' || rawEx === 'ALL' ? rawEx : 'HOSE';
 
-    const syms = getSymbolsByIndustry(industry, industry === 'Tất cả ngành');
-    const dfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(startDate, -10), endDate, 'D');
+    const catalog = await fetchFullStockCatalog();
+    let syms: string[] = [];
+
+    if (industry === 'Chỉ số') {
+      syms = [...ALL_MAIN_INDICES];
+    } else if (industry === 'Penny') {
+      syms = getSymbolsByIndustry('Penny', false);
+    } else {
+      const candidates = catalog.list.filter((item) => {
+        if (item.exchange === 'INDEX') return false;
+        if (exchange !== 'ALL' && item.exchange !== exchange) return false;
+        if (industry !== 'Tất cả ngành' && item.industry !== industry) return false;
+        return true;
+      });
+      syms = candidates.map((c) => c.symbol);
+
+      // For very large universes (e.g. UPCOM ~800 or ALL ~1500), rank by active trading value first to keep scans fast
+      if (syms.length > 260) {
+        const boardsToFetch: ('HOSE' | 'HNX' | 'UPCOM')[] =
+          exchange === 'ALL' ? ['HOSE', 'HNX', 'UPCOM'] : [exchange];
+        const boards = await Promise.all(
+          boardsToFetch.map((ex) => fetchExchangeBoardWithFallback(ex, endDate, false))
+        );
+        const valBySym = new Map<string, number>();
+        for (const br of boards) {
+          for (const [s, t] of Object.entries(br.board)) {
+            if (t.volume > 0) valBySym.set(s, t.value_bil || (t.last * t.volume) / 1e6);
+          }
+        }
+        syms = syms
+          .filter((s) => (valBySym.get(s) ?? 0) > 0)
+          .sort((a, b) => (valBySym.get(b) ?? 0) - (valBySym.get(a) ?? 0))
+          .slice(0, 260);
+      }
+    }
+
+    const dfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(startDate, -10), endDate, 'D', 24);
 
     const rows = [];
     for (const [sym, bars] of Object.entries(dfs)) {
@@ -881,9 +938,14 @@ app.post('/api/gainers', async (req, res) => {
       }
       if (c0 > 0 && lmin > 0 && hmax > 0) {
         const [y, m, d] = peakDate.split('-');
+        const meta = catalog.stocks[sym];
         rows.push({
           symbol: sym,
-          industry: industry === 'Penny' ? 'Penny' : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || 'Khác',
+          exchange: meta?.exchange || 'HOSE',
+          industry:
+            industry === 'Penny'
+              ? 'Penny'
+              : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || meta?.industry || 'Khác',
           pctChange: Number((((cl - c0) / c0) * 100).toFixed(2)),
           pctFromLow: Number((((cl - lmin) / lmin) * 100).toFixed(2)),
           pctFromHigh: Number((((cl - hmax) / hmax) * 100).toFixed(2)),
@@ -893,20 +955,20 @@ app.post('/api/gainers', async (req, res) => {
       }
     }
 
-    res.json({ rows });
+    res.json({ rows, scanned: syms.length });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Gainers error' });
   }
 });
 
-// 4.1 EOD CHART
+// 4.1 EOD CHART (Works for ALL HOSE/HNX/UPCOM symbols & indices with automatic fallback)
 app.get('/api/chart/eod', async (req, res) => {
   try {
     const today = vnTodayStr();
     const symbol = String(req.query.symbol || 'FPT').toUpperCase().trim();
     const startDate = String(req.query.start || addDaysToDateStr(today, -365));
     const endDate = String(req.query.end || today);
-    const tf = (String(req.query.tf || 'D').toUpperCase() as 'D' | 'W' | 'M');
+    const tf = String(req.query.tf || 'D').toUpperCase() as 'D' | 'W' | 'M';
     const masParam = String(req.query.mas || '10,20,50');
     const activeMas = [
       ...new Set(
@@ -918,10 +980,28 @@ app.get('/api/chart/eod', async (req, res) => {
     ].sort((a, b) => a - b);
 
     wsMgr.subscribe([symbol]);
-    const tick = endDate >= today ? wsMgr.getSnapshot([symbol])[symbol] : undefined;
-    let bars = await fetchSsiOhlcvCached(symbol, addDaysToDateStr(startDate, -400), endDate, 'D');
+    const tick =
+      endDate >= today && isVnMarketHours() ? wsMgr.getSnapshot([symbol])[symbol] : undefined;
+
+    const [catalog, fetched] = await Promise.all([
+      fetchFullStockCatalog(),
+      fetchSsiOhlcvWithMetaCached(symbol, addDaysToDateStr(startDate, -400), endDate, 'D'),
+    ]);
+
+    const meta = catalog.stocks[symbol];
+    let bars = fetched.bars;
     if (!bars.length) {
-      return res.json({ symbol, empty: true, bars: [], rawAth: 0 });
+      return res.json({
+        symbol,
+        companyName: meta?.companyName || symbol,
+        exchange: meta?.exchange || '',
+        industry: meta?.industry || '',
+        source: fetched.source,
+        resolvedDate: null,
+        empty: true,
+        bars: [],
+        rawAth: 0,
+      });
     }
 
     if (endDate >= today && tick) {
@@ -963,13 +1043,26 @@ app.get('/api/chart/eod', async (req, res) => {
       });
     }
 
-    res.json({ symbol, empty: outBars.length === 0, rawAth, bars: outBars });
+    const resolvedDate = outBars.length ? outBars[outBars.length - 1].date : null;
+
+    res.json({
+      symbol,
+      companyName: meta?.companyName || symbol,
+      exchange: meta?.exchange || '',
+      industry: meta?.industry || '',
+      source: fetched.source,
+      resolvedDate,
+      resolvedDateDisplay: resolvedDate ? formatDdMmYyyy(resolvedDate) : null,
+      empty: outBars.length === 0,
+      rawAth,
+      bars: outBars,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'EOD chart error' });
   }
 });
 
-// 4.2 INTRADAY CHART
+// 4.2 INTRADAY CHART (7-day lookback to latest session + automatic EOD fallback)
 app.get('/api/chart/intraday', async (req, res) => {
   try {
     const today = vnTodayStr();
@@ -980,38 +1073,106 @@ app.get('/api/chart/intraday', async (req, res) => {
 
     if (refresh) clearAllCaches();
     wsMgr.subscribe([symbol]);
-    const tick = dateStr === today ? wsMgr.getSnapshot([symbol])[symbol] : undefined;
+    const tick =
+      dateStr === today && isVnMarketHours() ? wsMgr.getSnapshot([symbol])[symbol] : undefined;
 
-    let bars = await fetchSsiOhlcvCached(symbol, dateStr, dateStr, tf, refresh);
+    const lookbackStart = addDaysToDateStr(dateStr, -7);
+    const [catalog, fetched] = await Promise.all([
+      fetchFullStockCatalog(),
+      fetchSsiOhlcvWithMetaCached(symbol, lookbackStart, dateStr, tf, refresh),
+    ]);
+
+    const meta = catalog.stocks[symbol];
+    let source = fetched.source;
+    let fallbackToDaily = false;
+    let resolvedDate: string | null = null;
+    let bars = fetched.bars.filter((b) => b.date <= dateStr);
+
     if (dateStr === today && tf === '1') {
-      bars = mergeLiveIntradaySeries(bars, wsMgr.getMinuteBars(symbol), today);
+      const wsBars = wsMgr.getMinuteBars(symbol);
+      if (wsBars.length) {
+        const todayBars = bars.filter((b) => b.date === today);
+        const merged = mergeLiveIntradaySeries(todayBars, wsBars, today);
+        if (merged.length) {
+          bars = merged;
+        }
+      }
     }
-    bars = filterVnTradingHours(bars);
+
+    if (bars.length) {
+      resolvedDate = bars[bars.length - 1].date;
+      bars = filterVnTradingHours(bars.filter((b) => b.date === resolvedDate));
+    }
+
+    // If intraday is still empty (e.g., illiquid UPCOM symbol with no intraday bars), fall back to latest 30 daily EOD sessions
+    if (!bars.length) {
+      const dailyFetched = await fetchSsiOhlcvWithMetaCached(
+        symbol,
+        addDaysToDateStr(dateStr, -90),
+        dateStr,
+        'D',
+        refresh
+      );
+      const dCut = dailyFetched.bars.filter((b) => b.date <= dateStr);
+      if (dCut.length) {
+        fallbackToDaily = true;
+        source = dailyFetched.source;
+        bars = dCut.slice(-30);
+        resolvedDate = bars[bars.length - 1].date;
+      }
+    }
 
     if (!bars.length) {
-      return res.json({ symbol, empty: true, bars: [] });
+      return res.json({
+        symbol,
+        companyName: meta?.companyName || symbol,
+        exchange: meta?.exchange || '',
+        industry: meta?.industry || '',
+        source,
+        requestedDate: dateStr,
+        resolvedDate: null,
+        fallbackToDaily: false,
+        empty: true,
+        bars: [],
+      });
     }
 
-    if (dateStr === today && tick) {
-      bars = patchLiveCandle(bars, tick, true);
+    if (dateStr === today && resolvedDate === today && tick) {
+      bars = patchLiveCandle(bars, tick, !fallbackToDaily);
     }
 
     const multiDay = new Set(bars.map((b) => b.date)).size > 1;
     const outBars = bars.map((b, i) => ({
       date: b.date,
-      time: b.time,
-      dtDisplay: `${formatDdMmYyyy(b.date)} ${b.time}`,
-      label: makeTradingLabel(b, true, multiDay),
+      time: fallbackToDaily ? formatDdMmYyyy(b.date) : b.time,
+      dtDisplay: fallbackToDaily ? formatDdMmYyyy(b.date) : `${formatDdMmYyyy(b.date)} ${b.time}`,
+      label: makeTradingLabel(b, !fallbackToDaily, multiDay),
       open: b.open,
       high: b.high,
       low: b.low,
       close: b.close,
       volume: b.volume,
       prevClose: i > 0 ? bars[i - 1].close : null,
-      pct: i > 0 && bars[i - 1].close > 0 ? Number((((b.close - bars[i - 1].close) / bars[i - 1].close) * 100).toFixed(2)) : 0,
+      pct:
+        i > 0 && bars[i - 1].close > 0
+          ? Number((((b.close - bars[i - 1].close) / bars[i - 1].close) * 100).toFixed(2))
+          : 0,
     }));
 
-    res.json({ symbol, empty: false, bars: outBars });
+    res.json({
+      symbol,
+      companyName: meta?.companyName || symbol,
+      exchange: meta?.exchange || '',
+      industry: meta?.industry || '',
+      source,
+      requestedDate: dateStr,
+      requestedDateDisplay: formatDdMmYyyy(dateStr),
+      resolvedDate,
+      resolvedDateDisplay: resolvedDate ? formatDdMmYyyy(resolvedDate) : null,
+      fallbackToDaily,
+      empty: false,
+      bars: outBars,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Intraday chart error' });
   }

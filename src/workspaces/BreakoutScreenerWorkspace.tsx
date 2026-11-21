@@ -23,9 +23,19 @@ import {
   vnTodayIso,
 } from '../utils/format';
 
-export const BreakoutScreenerWorkspace: React.FC = () => {
+import type { StockCatalogResponse } from '../types/catalog';
+
+interface Props {
+  catalog: StockCatalogResponse | null;
+}
+
+export const BreakoutScreenerWorkspace: React.FC<Props> = ({ catalog }) => {
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'radar' | 'minervini' | 'gainers'>('radar');
+  const industryOptions = useMemo(
+    () => (catalog?.industries?.length ? catalog.industries : INDUSTRY_GROUPS),
+    [catalog]
+  );
 
   // --- 3.1 Radar EOD ---
   const [maFast, setMaFast] = useState(20);
@@ -156,6 +166,7 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
   }, [minRes]);
 
   // --- 3.3 Top Gainers ---
+  const [gExchange, setGExchange] = useState<'HOSE' | 'HNX' | 'UPCOM' | 'ALL'>('HOSE');
   const [gStart, setGStart] = useState(() => addDaysIso(today, -30));
   const [gEnd, setGEnd] = useState(today);
   const [gInd, setGInd] = useState(INDUSTRY_GROUPS[0]);
@@ -170,7 +181,12 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
       const resp = await fetch('/api/gainers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate: gStart, endDate: gEnd, industry: gInd }),
+        body: JSON.stringify({
+          exchange: gExchange,
+          startDate: gStart,
+          endDate: gEnd,
+          industry: gInd,
+        }),
       });
       if (resp.ok) {
         const json = await resp.json();
@@ -658,6 +674,20 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
         <div className="space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
             <div className="md:col-span-2">
+              <FieldLabel label="Sàn">
+                <select
+                  value={gExchange}
+                  onChange={(e) => setGExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM' | 'ALL')}
+                  className={inputCls}
+                >
+                  <option value="HOSE">HOSE</option>
+                  <option value="HNX">HNX</option>
+                  <option value="UPCOM">UPCOM</option>
+                  <option value="ALL">Tất cả 3 sàn</option>
+                </select>
+              </FieldLabel>
+            </div>
+            <div className="md:col-span-2">
               <FieldLabel label="Từ ngày">
                 <input
                   type="date"
@@ -680,7 +710,7 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
             <div className="md:col-span-2">
               <FieldLabel label="Nhóm ngành">
                 <select value={gInd} onChange={(e) => setGInd(e.target.value)} className={inputCls}>
-                  {INDUSTRY_GROUPS.map((g) => (
+                  {industryOptions.map((g) => (
                     <option key={g} value={g}>
                       {g}
                     </option>
@@ -703,16 +733,16 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
                 </select>
               </FieldLabel>
             </div>
-            <div className="md:col-span-3">
-              <FieldLabel label="Xếp hạng theo">
+            <div className="md:col-span-1">
+              <FieldLabel label="Xếp hạng">
                 <select
                   value={gRank}
                   onChange={(e) => setGRank(e.target.value as any)}
                   className={inputCls}
                 >
-                  <option value="combo">Kết hợp (Hồi &amp; Giảm từ Đỉnh)</option>
-                  <option value="change">% Thay Đổi</option>
-                  <option value="low">% Hồi từ Đáy</option>
+                  <option value="combo">Kết hợp</option>
+                  <option value="change">% Đổi</option>
+                  <option value="low">% Hồi</option>
                 </select>
               </FieldLabel>
             </div>
@@ -731,6 +761,7 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
                     <th className="py-2 px-3">Mã CP</th>
+                    <th className="py-2 px-3">Sàn</th>
                     <th className="py-2 px-3">Nhóm Ngành</th>
                     <th className="py-2 px-3 text-right">% Thay Đổi</th>
                     <th className="py-2 px-3 text-right">% Tăng từ Đáy</th>
@@ -743,6 +774,9 @@ export const BreakoutScreenerWorkspace: React.FC = () => {
                   {gainersSorted.map((r) => (
                     <tr key={r.symbol} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="py-2 px-3 font-bold text-slate-900">{r.symbol}</td>
+                      <td className="py-2 px-3 text-[12px] font-semibold text-slate-500">
+                        {r.exchange || 'HOSE'}
+                      </td>
                       <td className="py-2 px-3 text-slate-600">{r.industry}</td>
                       <td className={`py-2 px-3 text-right tabular-nums ${colorSignedClass(r.pctChange)}`}>
                         {fmtSigned(r.pctChange, 2, '%')}

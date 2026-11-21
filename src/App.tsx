@@ -4,6 +4,7 @@ import { SectorFlowWorkspace } from './workspaces/SectorFlowWorkspace';
 import { BreakoutScreenerWorkspace } from './workspaces/BreakoutScreenerWorkspace';
 import { ChartAnalysisWorkspace } from './workspaces/ChartAnalysisWorkspace';
 import { PortfolioBacktestWorkspace } from './workspaces/PortfolioBacktestWorkspace';
+import type { StockCatalogResponse } from './types/catalog';
 
 const WORKSPACES = [
   { id: 'market', label: '🌐 Toàn Cảnh Thị Trường' },
@@ -18,11 +19,42 @@ type WorkspaceId = (typeof WORKSPACES)[number]['id'];
 export default function App() {
   const [activeWs, setActiveWs] = useState<WorkspaceId>('market');
   const [liveAuto, setLiveAuto] = useState(true);
+  const [catalog, setCatalog] = useState<StockCatalogResponse | null>(null);
   const [status, setStatus] = useState<{
     connected: boolean;
     hoseCount: number;
+    hnxCount: number;
+    upcomCount: number;
+    totalCount: number;
+    dataSource: string;
     vnClock: string;
-  }>({ connected: false, hoseCount: 0, vnClock: '' });
+  }>({
+    connected: false,
+    hoseCount: 0,
+    hnxCount: 0,
+    upcomCount: 0,
+    totalCount: 0,
+    dataSource: 'SSI',
+    vnClock: '',
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchCatalog = async () => {
+      try {
+        const resp = await fetch('/api/stocks');
+        if (resp.ok && mounted) {
+          setCatalog(await resp.json());
+        }
+      } catch {
+        // ignore transient network errors
+      }
+    };
+    fetchCatalog();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -34,6 +66,10 @@ export default function App() {
           setStatus({
             connected: Boolean(json.connected),
             hoseCount: Number(json.hoseCount || 0),
+            hnxCount: Number(json.hnxCount || 0),
+            upcomCount: Number(json.upcomCount || 0),
+            totalCount: Number(json.totalCount || json.hoseCount || 0),
+            dataSource: String(json.dataSource || 'SSI'),
             vnClock: String(json.vnClock || ''),
           });
         }
@@ -49,6 +85,8 @@ export default function App() {
     };
   }, []);
 
+  const totalCount = catalog?.counts.total || status.totalCount;
+
   return (
     <div className="min-h-screen bg-[#f1f5f9] text-[#0f172a]">
       <div className="max-w-[98.5%] mx-auto px-2 sm:px-3 pt-3 pb-10">
@@ -62,18 +100,24 @@ export default function App() {
               📊 V11 PRO
             </h1>
             <span className="text-[#94a3b8] text-[12px] font-medium">
-              Hệ Thống Phân Tích Định Lượng Minervini &amp; SSI Realtime
+              Hệ Thống Phân Tích Định Lượng Minervini &amp; Toàn Thị Trường Việt Nam
             </span>
           </div>
-          <div>
-            {status.connected ? (
-              <span className="inline-block bg-emerald-500/15 text-[#34d399] px-3.5 py-1 rounded-full font-bold text-[12.5px] border border-emerald-500/45">
-                🟢 SSI WebSocket Live ({status.hoseCount} mã HOSE) • {status.vnClock}
-              </span>
-            ) : (
-              <span className="inline-block bg-red-500/15 text-[#fca5a5] px-3.5 py-1 rounded-full font-bold text-[12.5px] border border-red-500/45">
-                🟡 SSI WebSocket Đang kết nối • {status.vnClock}
-              </span>
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] font-semibold tabular-nums">
+            <span className={status.connected ? 'text-[#34d399]' : 'text-[#fca5a5]'}>
+              {status.connected ? '● SSI WS Live' : '● SSI WS Đang kết nối'}
+            </span>
+            <span className="text-slate-600">·</span>
+            <span className="text-slate-200">
+              {totalCount > 0
+                ? `${totalCount.toLocaleString('en-US')} mã (HOSE ${status.hoseCount} · HNX ${status.hnxCount} · UPCOM ${status.upcomCount})`
+                : 'Đang tải danh mục 3 sàn...'}
+            </span>
+            {status.vnClock && (
+              <>
+                <span className="text-slate-600">·</span>
+                <span className="text-slate-300">{status.vnClock}</span>
+              </>
             )}
           </div>
         </header>
@@ -113,9 +157,13 @@ export default function App() {
         <main>
           {activeWs === 'market' && <MarketOverviewWorkspace liveAuto={liveAuto} />}
           {activeWs === 'sector' && <SectorFlowWorkspace />}
-          {activeWs === 'screener' && <BreakoutScreenerWorkspace />}
-          {activeWs === 'chart' && <ChartAnalysisWorkspace liveAuto={liveAuto} />}
-          {activeWs === 'portfolio' && <PortfolioBacktestWorkspace liveAuto={liveAuto} />}
+          {activeWs === 'screener' && <BreakoutScreenerWorkspace catalog={catalog} />}
+          {activeWs === 'chart' && (
+            <ChartAnalysisWorkspace liveAuto={liveAuto} catalog={catalog} />
+          )}
+          {activeWs === 'portfolio' && (
+            <PortfolioBacktestWorkspace liveAuto={liveAuto} catalog={catalog} />
+          )}
         </main>
       </div>
     </div>

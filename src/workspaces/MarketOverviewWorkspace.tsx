@@ -31,6 +31,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
   const [idxDate, setIdxDate] = useState(today);
   const [selectedIndices, setSelectedIndices] = useState<string[]>(ALL_MAIN_INDICES);
   const [idxData, setIdxData] = useState<any[]>([]);
+  const [idxMeta, setIdxMeta] = useState<{ dataSource?: string; syncTime?: string }>({});
   const [idxLoading, setIdxLoading] = useState(false);
 
   const loadIndices = useCallback(
@@ -50,6 +51,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
         if (resp.ok) {
           const json = await resp.json();
           setIdxData(json.indices || []);
+          setIdxMeta({ dataSource: json.dataSource, syncTime: json.syncTime });
         }
       } finally {
         if (!silent) setIdxLoading(false);
@@ -148,6 +150,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
   }, [idxData]);
 
   // --- Sub-tab 1.2: Treemap ---
+  const [tmExchange, setTmExchange] = useState<'HOSE' | 'HNX' | 'UPCOM'>('HOSE');
   const [tmDate, setTmDate] = useState(today);
   const [tmSizeMode, setTmSizeMode] = useState<'value' | 'volume'>('value');
   const [tmResp, setTmResp] = useState<any>(null);
@@ -158,6 +161,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
       if (!silent) setTmLoading(true);
       try {
         const q = new URLSearchParams({
+          exchange: tmExchange,
           date: tmDate,
           sizeMode: tmSizeMode,
           refresh: forceRefresh ? '1' : '0',
@@ -170,7 +174,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
         if (!silent) setTmLoading(false);
       }
     },
-    [tmDate, tmSizeMode]
+    [tmExchange, tmDate, tmSizeMode]
   );
 
   useEffect(() => {
@@ -186,22 +190,23 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
     const rows: any[] = tmResp?.rows || [];
     if (!rows.length) return null;
 
+    const rootEx = tmResp?.exchange || tmExchange;
     const totalGtgd = rows.reduce((s, r) => s + r.sizeVal, 0);
     const mktAvgPct =
       totalGtgd > 0 ? rows.reduce((s, r) => s + r.pct * r.sizeVal, 0) / totalGtgd : 0;
 
-    const ids: string[] = ['HOSE'];
-    const labels: string[] = ['HOSE'];
+    const ids: string[] = [rootEx];
+    const labels: string[] = [rootEx];
     const parents: string[] = [''];
     const values: number[] = [0];
     const colors: string[] = ['#0f172a'];
     const texts: string[] = [
-      `<b>HOSE (${fmtSigned(mktAvgPct, 2, '%')}) • Tổng: ${fmtNum(totalGtgd, 0)} ${
+      `<b>${rootEx} (${fmtSigned(mktAvgPct, 2, '%')}) • Tổng: ${fmtNum(totalGtgd, 0)} ${
         tmSizeMode === 'value' ? 'Tỷ' : 'CP'
       }</b>`,
     ];
     const hovers: string[] = [
-      `<b>Toàn sàn HOSE</b><br>Biến động BQ gia quyền: <b>${fmtSigned(mktAvgPct, 2, '%')}</b><br>Tổng: <b>${fmtNum(
+      `<b>Toàn sàn ${rootEx}</b><br>Biến động BQ gia quyền: <b>${fmtSigned(mktAvgPct, 2, '%')}</b><br>Tổng: <b>${fmtNum(
         totalGtgd,
         1
       )}</b><br>Số mã khớp lệnh: ${rows.length}`,
@@ -222,7 +227,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
 
       ids.push(secId);
       labels.push(ind);
-      parents.push('HOSE');
+      parents.push(rootEx);
       values.push(0);
       colors.push('#1e293b');
       texts.push(`<b>${ind}</b> (${fmtSigned(secPct, 2, '%')})`);
@@ -240,8 +245,10 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
         values.push(r.sizeVal);
         colors.push(getVnTreemapColor(r.pct));
         texts.push(`<b>${r.symbol}</b><br>${fmtSigned(r.pct, 2, '%')}`);
+        const nameLine =
+          r.companyName && r.companyName !== r.symbol ? `<br>${r.companyName}` : '';
         hovers.push(
-          `<b>${r.symbol}</b> (${ind})<br>Giá đóng cửa: <b>${fmtNum(r.price, 2)}</b><br>Thay đổi: <b>${fmtSigned(
+          `<b>${r.symbol}</b> (${ind})${nameLine}<br>Giá đóng cửa: <b>${fmtNum(r.price, 2)}</b><br>Thay đổi: <b>${fmtSigned(
             r.pct,
             2,
             '%'
@@ -277,10 +284,10 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
       ],
       layout: {
         margin: { l: 4, r: 4, t: 6, b: 4 },
-        uirevision: 'treemap_keep',
+        uirevision: `treemap_${rootEx}`,
       },
     };
-  }, [tmResp, tmSizeMode]);
+  }, [tmResp, tmSizeMode, tmExchange]);
 
   // --- Sub-tab 1.3: Market Health & Distribution Days ---
   const [maDate, setMaDate] = useState(today);
@@ -380,6 +387,17 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
 
           {idxData.length > 0 && (
             <>
+              {idxMeta.dataSource && (
+                <div className="text-[12.5px] text-slate-600 px-1 tabular-nums">
+                  Nguồn dữ liệu: <strong className="text-slate-800">{idxMeta.dataSource}</strong>
+                  {idxMeta.syncTime && (
+                    <>
+                      {' '}· Đồng bộ: <span className="font-medium text-slate-700">{idxMeta.syncTime}</span>
+                    </>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
                 {idxData.map((item) => (
                   <MetricCard
@@ -408,7 +426,20 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
 
       {subTab === 'treemap' && (
         <div className="space-y-2.5">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
+          <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
+            <div className="md:col-span-2">
+              <FieldLabel label="Sàn giao dịch">
+                <select
+                  value={tmExchange}
+                  onChange={(e) => setTmExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM')}
+                  className={inputCls}
+                >
+                  <option value="HOSE">HOSE</option>
+                  <option value="HNX">HNX</option>
+                  <option value="UPCOM">UPCOM</option>
+                </select>
+              </FieldLabel>
+            </div>
             <div className="md:col-span-3">
               <FieldLabel label="Ngày bản đồ nhiệt">
                 <input
@@ -454,16 +485,30 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
           </div>
 
           {tmLoading && !tmResp && (
-            <LoadingBar text="Đang tải dữ liệu bản đồ nhiệt toàn sàn HOSE từ SSI..." />
+            <LoadingBar text={`Đang tải dữ liệu bản đồ nhiệt sàn ${tmExchange}...`} />
           )}
 
           {tmResp?.counts && (
-            <div className="text-[12.5px] text-slate-600 px-1">
-              🟢 <strong>SSI {tmResp.mode === 'live' ? 'Realtime HOSE' : 'Lịch sử HOSE'}</strong> •
-              Đồng bộ lúc <code className="bg-slate-200/70 px-1.5 py-0.5 rounded">{tmResp.syncTime}</code> •
-              Tăng: <strong className="text-[#059669]">{tmResp.counts.up}</strong> | Giảm:{' '}
-              <strong className="text-[#dc2626]">{tmResp.counts.down}</strong> | TC:{' '}
-              <strong className="text-[#d97706]">{tmResp.counts.ref}</strong>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-600 px-1 tabular-nums">
+              <strong className="text-slate-900">
+                Sàn {tmResp.exchange || tmExchange}
+              </strong>
+              <span className="text-slate-300">·</span>
+              <span>
+                {tmResp.mode === 'live'
+                  ? `Trực tiếp (${tmResp.syncTime})`
+                  : `Dữ liệu EOD phiên gần nhất ${tmResp.tradeDateDisplay || tmResp.tradeDate}`}
+              </span>
+              <span className="text-slate-300">·</span>
+              <span>Nguồn: {tmResp.source || 'VNDirect'}</span>
+              <span className="text-slate-300">·</span>
+              <span>{tmResp.totalSymbols ?? tmResp.rows?.length ?? 0} mã khớp lệnh</span>
+              <span className="text-slate-300">·</span>
+              <span>
+                Tăng: <strong className="text-[#059669]">{tmResp.counts.up}</strong> | Giảm:{' '}
+                <strong className="text-[#dc2626]">{tmResp.counts.down}</strong> | TC:{' '}
+                <strong className="text-[#d97706]">{tmResp.counts.ref}</strong>
+              </span>
             </div>
           )}
 
@@ -474,7 +519,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
           ) : (
             !tmLoading && (
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
-                Đang đồng bộ dữ liệu khớp lệnh từ SSI hoặc không có dữ liệu cho ngày đã chọn.
+                Không có dữ liệu giao dịch cho sàn {tmExchange} vào ngày đã chọn.
               </div>
             )
           )}

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { INDUSTRY_GROUPS } from '../shared/constants';
+import { HARDCODED_HOSE_INDUSTRIES_MAPPING, INDUSTRY_GROUPS } from '../shared/constants';
 import { PlotlyChart } from '../components/PlotlyChart';
+import { SymbolSearchInput } from '../components/SymbolSearchInput';
 import {
   FieldLabel,
   LoadingBar,
@@ -10,6 +11,7 @@ import {
   SubTabs,
   inputCls,
 } from '../components/UiPrimitives';
+import type { StockCatalogItem, StockCatalogResponse } from '../types/catalog';
 import {
   colorSignedClass,
   colorStatusClass,
@@ -22,6 +24,7 @@ import {
 
 interface Props {
   liveAuto: boolean;
+  catalog: StockCatalogResponse | null;
 }
 
 interface HoldingItem {
@@ -45,9 +48,23 @@ function loadHoldings(): HoldingItem[] {
   }
 }
 
-export const PortfolioBacktestWorkspace: React.FC<Props> = ({ liveAuto }) => {
+export const PortfolioBacktestWorkspace: React.FC<Props> = ({ liveAuto, catalog }) => {
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'portfolio' | 'backtest'>('portfolio');
+
+  const stockItems = useMemo<StockCatalogItem[]>(() => {
+    if (catalog?.list?.length) {
+      return catalog.list.filter((item) => item.exchange !== 'INDEX');
+    }
+    return Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)
+      .filter(([, ind]) => ind !== 'Chỉ số')
+      .map(([symbol, industry]) => ({
+        symbol,
+        companyName: symbol,
+        industry,
+        exchange: 'HOSE' as const,
+      }));
+  }, [catalog]);
 
   // --- 5.1 Portfolio ---
   const [holdings, setHoldings] = useState<HoldingItem[]>(() => loadHoldings());
@@ -406,13 +423,13 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ liveAuto }) => {
               <div className="p-3 border-t border-slate-200 space-y-3">
                 <div className="grid grid-cols-2 md:grid-cols-12 gap-2.5 items-end">
                   <div className="md:col-span-2">
-                    <FieldLabel label="Mã CP">
-                      <input
-                        type="text"
+                    <FieldLabel label="Mã CP (3 sàn)">
+                      <SymbolSearchInput
                         value={newSym}
-                        onChange={(e) => setNewSym(e.target.value.toUpperCase())}
-                        placeholder="VD: FPT"
-                        className={inputCls}
+                        onSelect={(s) => setNewSym(s)}
+                        onChangeQuery={(s) => setNewSym(s)}
+                        items={stockItems}
+                        placeholder="VD: FPT, CEO..."
                       />
                     </FieldLabel>
                   </div>
