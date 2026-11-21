@@ -1205,7 +1205,7 @@ app.post('/api/backtest', async (req, res) => {
 // ==============================================================================
 async function startServer() {
   const distDir = path.resolve(__dirname, 'dist');
-  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(distDir);
+  const isProd = process.env.NODE_ENV !== 'development' && fs.existsSync(distDir);
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -1216,7 +1216,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
+    app.use((_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }
