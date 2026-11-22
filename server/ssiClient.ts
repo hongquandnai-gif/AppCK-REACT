@@ -74,6 +74,26 @@ export interface ExchangeBoardResult {
   syncTime: string;
 }
 
+export interface IndexSessionStat {
+  symbol: string;
+  date: string;
+  time: string;
+  close: number;
+  change: number;
+  pctChange: number;
+  totalValBil: number;
+  nmValBil: number;
+  ptValBil: number;
+  totalVolMil: number;
+  nmVolMil: number;
+  ptVolMil: number;
+  advances: number;
+  declines: number;
+  noChange: number;
+  ceilingStocks: number;
+  floorStocks: number;
+}
+
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 
 export function vnNowParts(nowMs = Date.now()) {
@@ -697,6 +717,98 @@ export async function fetchExchangeBoardWithFallback(
   return eodRes;
 }
 
+const indexStatsCache = new Map<string, { ts: number; data: Record<string, IndexSessionStat[]> }>();
+const INDEX_STATS_CACHE_TTL = 45_000;
+
+/**
+ * Fetches recent trading session statistics (total value, matched value, put-through value,
+ * volumes, market breadth) for VNINDEX, VN30, HNX, UPCOM, VNMID, VNSMALL via VNDirect vnmarket_prices.
+ * Returns sessions sorted descending by date (index 0 = latest <= targetDate, index 1 = previous session).
+ */
+export async function fetchIndexMarketStats(
+  targetDate: string,
+  forceRefresh = false
+): Promise<Record<string, IndexSessionStat[]>> {
+  const now = Date.now();
+  const key = targetDate;
+  if (!forceRefresh) {
+    const cached = indexStatsCache.get(key);
+    if (cached && now - cached.ts < INDEX_STATS_CACHE_TTL) {
+      return cached.data;
+    }
+  }
+
+  const url = `https://api-finfo.vndirect.com.vn/v4/vnmarket_prices?sort=date:desc&q=code:VNINDEX,VN30,HNX,UPCOM,VNMID,VNSML~date:lte:${encodeURIComponent(
+    targetDate
+  )}&size=48`;
+  const payload = await fetchVndirectJson(url, 12000);
+  const items: any[] = Array.isArray(payload?.data) ? payload.data : [];
+
+  const grouped: Record<string, IndexSessionStat[]> = {};
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const rawCode = String(item?.code || '').trim().toUpperCase();
+    const date = String(item?.date || '').trim();
+    if (!rawCode || !date) continue;
+    const sym = rawCode === 'VNSML' ? 'VNSMALL' : rawCode;
+    const dedupKey = `${sym}|${date}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+
+    const nmVal = Number(item?.nmValue ?? 0);
+    const ptVal = Number(item?.ptValue ?? 0);
+    const accVal = Number(item?.accumulatedVal ?? 0);
+    const totalValVnd = Number.isFinite(accVal) && accVal > 0 ? accVal : (nmVal || 0) + (ptVal || 0);
+
+    const nmVol = Number(item?.nmVolume ?? 0);
+    const ptVol = Number(item?.ptVolume ?? 0);
+    const accVol = Number(item?.accumulatedVol ?? 0);
+    const totalVol = Number.isFinite(accVol) && accVol > 0 ? accVol : (nmVol || 0) + (ptVol || 0);
+
+    const stat: IndexSessionStat = {
+      symbol: sym,
+      date,
+      time: String(item?.time || ''),
+      close: Number(item?.close ?? 0),
+      change: Number(item?.change ?? 0),
+      pctChange: Number(item?.pctChange ?? 0),
+      totalValBil: Number((totalValVnd / 1e9).toFixed(2)),
+      nmValBil: Number(((Number.isFinite(nmVal) ? nmVal : 0) / 1e9).toFixed(2)),
+      ptValBil: Number(((Number.isFinite(ptVal) ? ptVal : 0) / 1e9).toFixed(2)),
+      totalVolMil: Number((totalVol / 1e6).toFixed(2)),
+      nmVolMil: Number(((Number.isFinite(nmVol) ? nmVol : 0) / 1e6).toFixed(2)),
+      ptVolMil: Number(((Number.isFinite(ptVol) ? ptVol : 0) / 1e6).toFixed(2)),
+      advances: Number(item?.advances ?? 0),
+      declines: Number(item?.declines ?? 0),
+      noChange: Number(item?.noChange ?? 0),
+      ceilingStocks: Number(item?.ceilingStocks ?? 0),
+      floorStocks: Number(item?.floorStocks ?? 0),
+    };
+
+    if (!grouped[sym]) grouped[sym] = [];
+    grouped[sym].push(stat);
+    if (sym === 'VNSMALL') {
+      if (!grouped.VNSML) grouped.VNSML = [];
+      grouped.VNSML.push({ ...stat, symbol: 'VNSML' });
+    }
+  }
+
+  for (const list of Object.values(grouped)) {
+    list.sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  if (Object.keys(grouped).length > 0) {
+    if (indexStatsCache.size > 30) {
+      const firstKey = indexStatsCache.keys().next().value;
+      if (firstKey) indexStatsCache.delete(firstKey);
+    }
+    indexStatsCache.set(key, { ts: now, data: grouped });
+  }
+
+  return grouped;
+}
+
 // ==============================================================================
 // 3. OHLCV FETCHING (SSI PRIMARY -> UNIVERSAL VNDIRECT FALLBACK)
 // ==============================================================================
@@ -896,6 +1008,7 @@ export function clearAllCaches() {
   batchCache.clear();
   singleCache.clear();
   eodBoardCache.clear();
+  indexStatsCache.clear();
 }
 
 export async function fetchBatchOhlcvSsi(
@@ -1157,7 +1270,8 @@ export class SSIWebSocketManager {
     const div = isIdx ? 1 : 1000;
     const rawLast = item.matchedPrice ?? item.indexValue ?? item.lastPrice ?? item.c;
     const rawRef = item.refPrice ?? item.prevIndexValue ?? item.r;
-    const rawVol = item.nmTotalTradedQty ?? item.totalVolume ?? item.v;
+    const rawVol = item.nmTotalTradedQty ?? item.allQty ?? item.totalVolume ?? item.v;
+    const rawVal = item.allValue ?? item.totalValue ?? item.nmTotalTradedValue ?? item.value;
     if (rawLast === null || rawLast === undefined) return;
 
     const lastF = Number(rawLast);
@@ -1178,6 +1292,14 @@ export class SSIWebSocketManager {
     const pct = refVal && refVal > 0 ? (delta / refVal) * 100 : 0;
     const parts = vnNowParts();
 
+    let valueBil = prev?.value_bil;
+    if (rawVal !== null && rawVal !== undefined && Number.isFinite(Number(rawVal))) {
+      const vf = Number(rawVal);
+      if (vf > 0) {
+        valueBil = vf > 1e6 ? vf / 1e9 : vf;
+      }
+    }
+
     const tick: LiveTick = {
       symbol: sym,
       last: lastVal,
@@ -1188,6 +1310,7 @@ export class SSIWebSocketManager {
         rawVol !== null && rawVol !== undefined && Number.isFinite(Number(rawVol))
           ? Number(rawVol)
           : prev?.volume ?? 0,
+      value_bil: valueBil,
       time: parts.hms,
     };
 

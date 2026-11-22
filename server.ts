@@ -15,12 +15,14 @@ import {
   fetchBatchOhlcvSsi,
   fetchExchangeBoardWithFallback,
   fetchFullStockCatalog,
+  fetchIndexMarketStats,
   fetchSsiOhlcvWithMetaCached,
   getSsiWsManager,
   isSsiRestBlocked,
   isVnMarketHours,
   vnNowParts,
   vnTodayStr,
+  type IndexSessionStat,
   type LiveTick,
   type OhlcvBar,
 } from './server/ssiClient.ts';
@@ -207,7 +209,11 @@ app.get('/api/indices-live', async (req, res) => {
       await wsMgr.ensureIndicesLoaded(selectedIndices);
     }
 
-    const liveTicks = wsMgr.getSnapshot(selectedIndices);
+    const [liveTicks, indexStatsMap] = await Promise.all([
+      Promise.resolve(wsMgr.getSnapshot(selectedIndices)),
+      fetchIndexMarketStats(idxDate, refresh),
+    ]);
+
     const results = await Promise.all(
       selectedIndices.map(async (sym) => {
         let bars1m: OhlcvBar[] = [];
@@ -281,6 +287,32 @@ app.get('/api/indices-live', async (req, res) => {
           }
         }
 
+        const statList = indexStatsMap[sym] || [];
+        const curStat: IndexSessionStat | undefined =
+          statList.find((s) => s.date === resolvedDate) || statList[0];
+        const prevStat: IndexSessionStat | undefined = curStat
+          ? statList.find((s) => s.date < curStat.date)
+          : statList[1];
+
+        let totalValBil = curStat?.totalValBil ?? 0;
+        const nmValBil = curStat?.nmValBil ?? 0;
+        const ptValBil = curStat?.ptValBil ?? 0;
+        let totalVolMil = curStat?.totalVolMil ?? Number((vol / 1e6).toFixed(2));
+        const nmVolMil = curStat?.nmVolMil ?? Number((vol / 1e6).toFixed(2));
+
+        if (idxDate === today && isVnMarketHours() && liveTicks[sym]?.value_bil) {
+          totalValBil = Number(liveTicks[sym].value_bil!.toFixed(2));
+        }
+        if (idxDate === today && isVnMarketHours() && liveTicks[sym]?.volume) {
+          totalVolMil = Number((liveTicks[sym].volume / 1e6).toFixed(2));
+        }
+
+        const prevTotalValBil = prevStat?.totalValBil ?? 0;
+        const valDeltaPct =
+          prevTotalValBil > 0
+            ? Number((((totalValBil - prevTotalValBil) / prevTotalValBil) * 100).toFixed(2))
+            : null;
+
         const uniqueDates = new Set(plotSeries.map((b) => b.date)).size;
         const points = plotSeries.map((b) => {
           const x = makeTradingLabel(b, isIntradayMode, uniqueDates > 1);
@@ -306,6 +338,22 @@ app.get('/api/indices-live', async (req, res) => {
           delta,
           pct,
           vol,
+          totalValBil,
+          nmValBil,
+          ptValBil,
+          totalVolMil,
+          nmVolMil,
+          prevTotalValBil,
+          valDeltaPct,
+          breadth: curStat
+            ? {
+                advances: curStat.advances,
+                declines: curStat.declines,
+                noChange: curStat.noChange,
+                ceilingStocks: curStat.ceilingStocks,
+                floorStocks: curStat.floorStocks,
+              }
+            : null,
           prevClose,
           isIntradayMode,
           points,
@@ -313,14 +361,338 @@ app.get('/api/indices-live', async (req, res) => {
       })
     );
 
+    // Aggregate 3-exchange market trading value & volume (HOSE + HNX + UPCOM)
+    let mktTotalValBil = 0;
+    let mktNmValBil = 0;
+    let mktPtValBil = 0;
+    let mktTotalVolMil = 0;
+    let mktPrevTotalValBil = 0;
+    let mktDate = idxDate;
+    for (const exIdx of ['VNINDEX', 'HNX', 'UPCOM']) {
+      const list = indexStatsMap[exIdx];
+      if (list?.[0]) {
+        mktTotalValBil += list[0].totalValBil;
+        mktNmValBil += list[0].nmValBil;
+        mktPtValBil += list[0].ptValBil;
+        mktTotalVolMil += list[0].totalVolMil;
+        if (exIdx === 'VNINDEX') mktDate = list[0].date;
+      }
+      if (list?.[1]) {
+        mktPrevTotalValBil += list[1].totalValBil;
+      }
+    }
+    const marketTotal =
+      mktTotalValBil > 0
+        ? {
+            dateDisplay: formatDdMmYyyy(mktDate),
+            totalValBil: Number(mktTotalValBil.toFixed(2)),
+            nmValBil: Number(mktNmValBil.toFixed(2)),
+            ptValBil: Number(mktPtValBil.toFixed(2)),
+            totalVolMil: Number(mktTotalVolMil.toFixed(2)),
+            prevTotalValBil: Number(mktPrevTotalValBil.toFixed(2)),
+            valDeltaPct:
+              mktPrevTotalValBil > 0
+                ? Number(
+                    (((mktTotalValBil - mktPrevTotalValBil) / mktPrevTotalValBil) * 100).toFixed(2)
+                  )
+                : null,
+          }
+        : null;
+
     const sources = [...new Set(results.map((r) => r.source))];
     res.json({
       indices: results,
+      marketTotal,
       dataSource: sources.join(' / ') || 'VNDirect',
       syncTime: wsMgr.lastUpdate || vnNowParts().hms,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Indices live error' });
+  }
+});
+
+// Helper: Canonical VN intraday timeline slots (09:00..11:30 & 13:00..15:00 -> 272 minute slots)
+const VN_INTRADAY_SLOTS: string[] = [];
+for (let m = 9 * 60; m <= 11 * 60 + 30; m++) {
+  VN_INTRADAY_SLOTS.push(
+    `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+  );
+}
+for (let m = 13 * 60; m <= 15 * 60; m++) {
+  VN_INTRADAY_SLOTS.push(
+    `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+  );
+}
+
+function timeToVnSlotIndex(hm: string): number {
+  const [hh, mm] = hm.split(':').map(Number);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return 0;
+  const totalMin = hh * 60 + mm;
+  if (totalMin <= 9 * 60) return 0;
+  if (totalMin <= 11 * 60 + 30) return totalMin - 9 * 60;
+  if (totalMin < 13 * 60) return 150; // fold 11:31..12:59 into 11:30
+  if (totalMin <= 15 * 60) return 151 + (totalMin - 13 * 60);
+  return 271; // fold ATC prints 15:01..15:10 into 15:00
+}
+
+// 1.1B INTRADAY LIQUIDITY COMPARISON (FIREANT STYLE: TODAY VS YESTERDAY & 5-SESSION AVG)
+app.get('/api/intraday-liquidity', async (req, res) => {
+  try {
+    const today = vnTodayStr();
+    const targetDate = String(req.query.date || today);
+    const rawSym = String(req.query.symbol || 'VNINDEX').toUpperCase().trim();
+    const refresh = req.query.refresh === '1';
+    if (refresh) clearAllCaches();
+
+    const isAll3 = rawSym === 'ALL3';
+    const componentSyms = isAll3 ? ['VNINDEX', 'HNX', 'UPCOM'] : [rawSym];
+
+    const lookbackStart = addDaysToDateStr(targetDate, -14);
+    const [indexStatsMap, barResults] = await Promise.all([
+      fetchIndexMarketStats(targetDate, refresh),
+      Promise.all(
+        componentSyms.map((s) => fetchSsiOhlcvWithMetaCached(s, lookbackStart, targetDate, '1', refresh))
+      ),
+    ]);
+
+    const source = barResults[0]?.source || 'VNDirect';
+
+    // Group 1m bars per symbol by date <= targetDate
+    const perSymByDate = new Map<string, Map<string, OhlcvBar[]>>();
+    const allDatesSet = new Set<string>();
+
+    componentSyms.forEach((sym, i) => {
+      const m = new Map<string, OhlcvBar[]>();
+      let bars = (barResults[i]?.bars || []).filter((b) => b.date <= targetDate);
+      if (targetDate === today) {
+        const wsBars = wsMgr.getMinuteBars(sym);
+        if (wsBars.length) {
+          const todayBars = bars.filter((b) => b.date === today);
+          const merged = mergeLiveIntradaySeries(todayBars, wsBars, today);
+          bars = [...bars.filter((b) => b.date !== today), ...merged];
+        }
+      }
+      for (const b of bars) {
+        let arr = m.get(b.date);
+        if (!arr) {
+          arr = [];
+          m.set(b.date, arr);
+        }
+        arr.push(b);
+        allDatesSet.add(b.date);
+      }
+      perSymByDate.set(sym, m);
+    });
+
+    const sortedDates = [...allDatesSet].sort((a, b) => b.localeCompare(a));
+    if (!sortedDates.length) {
+      return res.json({
+        symbol: rawSym,
+        empty: true,
+        source,
+      });
+    }
+
+    const curDate = sortedDates[0];
+    const prevDate = sortedDates[1] || null;
+    const avgDates = sortedDates.slice(1, 6); // up to 5 previous sessions
+
+    // Build per-date cumulative slot arrays (Volume in Million shares, Value in Billion VND)
+    const buildDayCumulative = (dateStr: string) => {
+      const slotVol = new Float64Array(VN_INTRADAY_SLOTS.length);
+      const slotVal = new Float64Array(VN_INTRADAY_SLOTS.length);
+      let maxSlotSeen = -1;
+
+      for (const sym of componentSyms) {
+        const dayBars = perSymByDate.get(sym)?.get(dateStr) || [];
+        if (!dayBars.length) continue;
+
+        const symSlotVol = new Float64Array(VN_INTRADAY_SLOTS.length);
+        let symTotalShares = 0;
+        for (const b of dayBars) {
+          const idx = timeToVnSlotIndex(b.time);
+          if (idx > maxSlotSeen) maxSlotSeen = idx;
+          symSlotVol[idx] += b.volume;
+          symTotalShares += b.volume;
+        }
+
+        // Calibrate matched value (Tỷ VNĐ) using official vnmarket_prices nmValue / nmVolume
+        const statList = indexStatsMap[sym] || [];
+        const dayStat = statList.find((s) => s.date === dateStr) || statList[0];
+        let bilPerMilShares = 20.0; // reasonable VN fallback (~20k VND/share)
+        if (dayStat && dayStat.nmValBil > 0) {
+          const denomMil =
+            dayStat.date === dateStr && symTotalShares > 0
+              ? symTotalShares / 1e6
+              : dayStat.nmVolMil > 0
+              ? dayStat.nmVolMil
+              : symTotalShares / 1e6;
+          if (denomMil > 0) {
+            bilPerMilShares = dayStat.nmValBil / denomMil;
+          }
+        }
+
+        for (let i = 0; i < VN_INTRADAY_SLOTS.length; i++) {
+          const volMil = symSlotVol[i] / 1e6;
+          slotVol[i] += volMil;
+          slotVal[i] += volMil * bilPerMilShares;
+        }
+      }
+
+      const cumVol: number[] = new Array(VN_INTRADAY_SLOTS.length);
+      const cumVal: number[] = new Array(VN_INTRADAY_SLOTS.length);
+      let runVol = 0;
+      let runVal = 0;
+      for (let i = 0; i < VN_INTRADAY_SLOTS.length; i++) {
+        runVol += slotVol[i];
+        runVal += slotVal[i];
+        cumVol[i] = Number(runVol.toFixed(3));
+        cumVal[i] = Number(runVal.toFixed(2));
+      }
+      return { cumVol, cumVal, maxSlotSeen };
+    };
+
+    const curDay = buildDayCumulative(curDate);
+    const prevDay = prevDate ? buildDayCumulative(prevDate) : null;
+    const avgDaysBuilt = avgDates.map((d) => buildDayCumulative(d));
+
+    const isLiveNow = curDate === today && isVnMarketHours();
+    const nowSlotIdx = isLiveNow ? timeToVnSlotIndex(vnNowParts().hm) : VN_INTRADAY_SLOTS.length - 1;
+    const cutoffIdx = isLiveNow
+      ? Math.max(curDay.maxSlotSeen, Math.min(nowSlotIdx, VN_INTRADAY_SLOTS.length - 1))
+      : VN_INTRADAY_SLOTS.length - 1;
+
+    const curVolSeries: (number | null)[] = VN_INTRADAY_SLOTS.map((_, i) =>
+      i <= cutoffIdx ? curDay.cumVol[i] : null
+    );
+    const curValSeries: (number | null)[] = VN_INTRADAY_SLOTS.map((_, i) =>
+      i <= cutoffIdx ? curDay.cumVal[i] : null
+    );
+    const prevVolSeries: (number | null)[] = prevDay
+      ? prevDay.cumVol
+      : VN_INTRADAY_SLOTS.map(() => null);
+    const prevValSeries: (number | null)[] = prevDay
+      ? prevDay.cumVal
+      : VN_INTRADAY_SLOTS.map(() => null);
+
+    const avg5VolSeries: (number | null)[] = VN_INTRADAY_SLOTS.map((_, i) => {
+      if (!avgDaysBuilt.length) return null;
+      const sum = avgDaysBuilt.reduce((acc, d) => acc + d.cumVol[i], 0);
+      return Number((sum / avgDaysBuilt.length).toFixed(3));
+    });
+    const avg5ValSeries: (number | null)[] = VN_INTRADAY_SLOTS.map((_, i) => {
+      if (!avgDaysBuilt.length) return null;
+      const sum = avgDaysBuilt.reduce((acc, d) => acc + d.cumVal[i], 0);
+      return Number((sum / avgDaysBuilt.length).toFixed(2));
+    });
+
+    // Aggregate official session stats (including put-through) for summary card
+    let officialTotalValBil = 0;
+    let officialNmValBil = 0;
+    let officialPtValBil = 0;
+    let officialTotalVolMil = 0;
+    let officialPrevTotalValBil = 0;
+    for (const sym of componentSyms) {
+      const list = indexStatsMap[sym] || [];
+      const curSt = list.find((s) => s.date === curDate) || list[0];
+      const prevSt = prevDate ? list.find((s) => s.date === prevDate) || list[1] : list[1];
+      if (curSt) {
+        officialTotalValBil += curSt.totalValBil;
+        officialNmValBil += curSt.nmValBil;
+        officialPtValBil += curSt.ptValBil;
+        officialTotalVolMil += curSt.totalVolMil;
+      }
+      if (prevSt) {
+        officialPrevTotalValBil += prevSt.totalValBil;
+      }
+    }
+
+    const curVolAtCut = curVolSeries[cutoffIdx] ?? 0;
+    const prevVolAtCut = prevVolSeries[cutoffIdx] ?? 0;
+    const avg5VolAtCut = avg5VolSeries[cutoffIdx] ?? 0;
+    const curValAtCut = curValSeries[cutoffIdx] ?? 0;
+    const prevValAtCut = prevValSeries[cutoffIdx] ?? 0;
+    const avg5ValAtCut = avg5ValSeries[cutoffIdx] ?? 0;
+
+    const milestoneTimes = ['09:30', '10:00', '10:30', '11:00', '11:30', '13:30', '14:00', '14:30', '15:00'];
+    const milestones = milestoneTimes.map((t) => {
+      const idx = timeToVnSlotIndex(t);
+      const cv = curVolSeries[idx];
+      const pv = prevVolSeries[idx];
+      const cVal = curValSeries[idx];
+      const pVal = prevValSeries[idx];
+      return {
+        time: t,
+        curVol: cv,
+        prevVol: pv,
+        volDiffPct:
+          cv !== null && pv !== null && pv > 0 ? Number((((cv - pv) / pv) * 100).toFixed(2)) : null,
+        curVal: cVal,
+        prevVal: pVal,
+        valDiffPct:
+          cVal !== null && pVal !== null && pVal > 0
+            ? Number((((cVal - pVal) / pVal) * 100).toFixed(2))
+            : null,
+      };
+    });
+
+    res.json({
+      symbol: rawSym,
+      empty: false,
+      source,
+      isLiveNow,
+      cutoffTime: VN_INTRADAY_SLOTS[cutoffIdx],
+      curDate,
+      curDateDisplay: formatDdMmYyyy(curDate),
+      curDateShort: formatDdMm(curDate),
+      prevDate,
+      prevDateDisplay: prevDate ? formatDdMmYyyy(prevDate) : null,
+      prevDateShort: prevDate ? formatDdMm(prevDate) : null,
+      avgSessionsCount: avgDaysBuilt.length,
+      times: VN_INTRADAY_SLOTS,
+      series: {
+        curVol: curVolSeries,
+        prevVol: prevVolSeries,
+        avg5Vol: avg5VolSeries,
+        curVal: curValSeries,
+        prevVal: prevValSeries,
+        avg5Val: avg5ValSeries,
+      },
+      summary: {
+        curVolMil: Number(curVolAtCut.toFixed(2)),
+        prevVolMil: Number(prevVolAtCut.toFixed(2)),
+        volDiffMil: Number((curVolAtCut - prevVolAtCut).toFixed(2)),
+        volDiffPct:
+          prevVolAtCut > 0
+            ? Number((((curVolAtCut - prevVolAtCut) / prevVolAtCut) * 100).toFixed(2))
+            : null,
+        avg5VolMil: Number(avg5VolAtCut.toFixed(2)),
+        volVsAvg5Pct:
+          avg5VolAtCut > 0
+            ? Number((((curVolAtCut - avg5VolAtCut) / avg5VolAtCut) * 100).toFixed(2))
+            : null,
+        curValBil: Number(curValAtCut.toFixed(2)),
+        prevValBil: Number(prevValAtCut.toFixed(2)),
+        valDiffBil: Number((curValAtCut - prevValAtCut).toFixed(2)),
+        valDiffPct:
+          prevValAtCut > 0
+            ? Number((((curValAtCut - prevValAtCut) / prevValAtCut) * 100).toFixed(2))
+            : null,
+        avg5ValBil: Number(avg5ValAtCut.toFixed(2)),
+        valVsAvg5Pct:
+          avg5ValAtCut > 0
+            ? Number((((curValAtCut - avg5ValAtCut) / avg5ValAtCut) * 100).toFixed(2))
+            : null,
+        officialTotalValBil: Number(officialTotalValBil.toFixed(2)),
+        officialNmValBil: Number(officialNmValBil.toFixed(2)),
+        officialPtValBil: Number(officialPtValBil.toFixed(2)),
+        officialTotalVolMil: Number(officialTotalVolMil.toFixed(2)),
+        officialPrevTotalValBil: Number(officialPrevTotalValBil.toFixed(2)),
+      },
+      milestones,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Intraday liquidity error' });
   }
 });
 

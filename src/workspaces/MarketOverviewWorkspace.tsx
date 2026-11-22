@@ -23,15 +23,91 @@ interface Props {
   liveAuto: boolean;
 }
 
+interface MarketTotalSummary {
+  dateDisplay: string;
+  totalValBil: number;
+  nmValBil: number;
+  ptValBil: number;
+  totalVolMil: number;
+  prevTotalValBil: number;
+  valDeltaPct: number | null;
+}
+
+interface IntradayLiquidityResp {
+  symbol: string;
+  empty?: boolean;
+  source?: string;
+  isLiveNow?: boolean;
+  cutoffTime?: string;
+  curDate?: string;
+  curDateDisplay?: string;
+  curDateShort?: string;
+  prevDate?: string | null;
+  prevDateDisplay?: string | null;
+  prevDateShort?: string | null;
+  avgSessionsCount?: number;
+  times?: string[];
+  series?: {
+    curVol: (number | null)[];
+    prevVol: (number | null)[];
+    avg5Vol: (number | null)[];
+    curVal: (number | null)[];
+    prevVal: (number | null)[];
+    avg5Val: (number | null)[];
+  };
+  summary?: {
+    curVolMil: number;
+    prevVolMil: number;
+    volDiffMil: number;
+    volDiffPct: number | null;
+    avg5VolMil: number;
+    volVsAvg5Pct: number | null;
+    curValBil: number;
+    prevValBil: number;
+    valDiffBil: number;
+    valDiffPct: number | null;
+    avg5ValBil: number;
+    valVsAvg5Pct: number | null;
+    officialTotalValBil: number;
+    officialNmValBil: number;
+    officialPtValBil: number;
+    officialTotalVolMil: number;
+    officialPrevTotalValBil: number;
+  };
+  milestones?: Array<{
+    time: string;
+    curVol: number | null;
+    prevVol: number | null;
+    volDiffPct: number | null;
+    curVal: number | null;
+    prevVal: number | null;
+    valDiffPct: number | null;
+  }>;
+}
+
+const LIQUIDITY_SYMBOLS: Array<{ id: string; label: string }> = [
+  { id: 'VNINDEX', label: 'VNINDEX' },
+  { id: 'VN30', label: 'VN30' },
+  { id: 'HNX', label: 'HNX' },
+  { id: 'UPCOM', label: 'UPCOM' },
+  { id: 'VNMID', label: 'VNMID' },
+  { id: 'VNSMALL', label: 'VNSMALL' },
+  { id: 'ALL3', label: 'Toàn TT (3 sàn)' },
+];
+
 export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
   const today = useMemo(() => vnTodayIso(), []);
-  const [subTab, setSubTab] = useState<'indices' | 'treemap' | 'health'>('indices');
+  const [subTab, setSubTab] = useState<'indices' | 'liquidity' | 'treemap' | 'health'>('indices');
 
   // --- Sub-tab 1.1: Indices Live ---
   const [idxDate, setIdxDate] = useState(today);
   const [selectedIndices, setSelectedIndices] = useState<string[]>(ALL_MAIN_INDICES);
   const [idxData, setIdxData] = useState<any[]>([]);
-  const [idxMeta, setIdxMeta] = useState<{ dataSource?: string; syncTime?: string }>({});
+  const [idxMeta, setIdxMeta] = useState<{
+    dataSource?: string;
+    syncTime?: string;
+    marketTotal?: MarketTotalSummary | null;
+  }>({});
   const [idxLoading, setIdxLoading] = useState(false);
 
   const loadIndices = useCallback(
@@ -51,7 +127,11 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
         if (resp.ok) {
           const json = await resp.json();
           setIdxData(json.indices || []);
-          setIdxMeta({ dataSource: json.dataSource, syncTime: json.syncTime });
+          setIdxMeta({
+            dataSource: json.dataSource,
+            syncTime: json.syncTime,
+            marketTotal: json.marketTotal || null,
+          });
         }
       } finally {
         if (!silent) setIdxLoading(false);
@@ -132,14 +212,15 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
         });
       }
 
+      const valLabel = item.totalValBil > 0 ? ` · ${fmtNum(item.totalValBil, 0)} Tỷ` : '';
       annotations.push({
         xref: `${xRef} domain`,
         yref: `${yRef} domain`,
         x: 0.5,
         y: 1.07,
-        text: `<b>${item.symbol}</b>`,
+        text: `<b>${item.symbol}</b>${valLabel}`,
         showarrow: false,
-        font: { size: 13, color: '#0f172a' },
+        font: { size: 12.5, color: '#0f172a' },
       });
     });
 
@@ -148,6 +229,192 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
 
     return { traces, layout, height: Math.max(420, nRows * 250) };
   }, [idxData]);
+
+  // --- Sub-tab 1.1B: Intraday Liquidity Comparison (FireAnt style) ---
+  const [liqSym, setLiqSym] = useState<string>('VNINDEX');
+  const [liqDate, setLiqDate] = useState(today);
+  const [liqMetric, setLiqMetric] = useState<'vol' | 'val'>('vol');
+  const [liqShowAvg5, setLiqShowAvg5] = useState(true);
+  const [liqResp, setLiqResp] = useState<IntradayLiquidityResp | null>(null);
+  const [liqLoading, setLiqLoading] = useState(false);
+  const [liqError, setLiqError] = useState<string | null>(null);
+
+  const loadLiquidity = useCallback(
+    async (forceRefresh = false, silent = false) => {
+      if (!silent) {
+        setLiqLoading(true);
+        setLiqError(null);
+      }
+      try {
+        const q = new URLSearchParams({
+          symbol: liqSym,
+          date: liqDate,
+          refresh: forceRefresh ? '1' : '0',
+        });
+        const resp = await fetch(`/api/intraday-liquidity?${q.toString()}`);
+        if (resp.ok) {
+          const json: IntradayLiquidityResp = await resp.json();
+          setLiqResp(json);
+          setLiqError(null);
+        } else if (!silent) {
+          setLiqError('Không thể tải dữ liệu thanh khoản trong ngày.');
+        }
+      } catch {
+        if (!silent) setLiqError('Lỗi kết nối khi tải thanh khoản trong ngày.');
+      } finally {
+        if (!silent) setLiqLoading(false);
+      }
+    },
+    [liqSym, liqDate]
+  );
+
+  useEffect(() => {
+    if (subTab !== 'liquidity') return;
+    loadLiquidity(false, false);
+    if (liveAuto && liqDate === today) {
+      const id = setInterval(() => loadLiquidity(false, true), 5000);
+      return () => clearInterval(id);
+    }
+  }, [subTab, liveAuto, liqDate, today, loadLiquidity]);
+
+  const liquidityChart = useMemo(() => {
+    if (!liqResp || liqResp.empty || !liqResp.times?.length || !liqResp.series) return null;
+    const times = liqResp.times;
+    const isVol = liqMetric === 'vol';
+    const unit = isVol ? 'Tr CP' : 'Tỷ';
+    const dec = isVol ? 2 : 1;
+    const curArr = isVol ? liqResp.series.curVol : liqResp.series.curVal;
+    const prevArr = isVol ? liqResp.series.prevVol : liqResp.series.prevVal;
+    const avg5Arr = isVol ? liqResp.series.avg5Vol : liqResp.series.avg5Val;
+
+    const summary = liqResp.summary;
+    const curHigher = isVol
+      ? (summary?.curVolMil ?? 0) >= (summary?.prevVolMil ?? 0)
+      : (summary?.curValBil ?? 0) >= (summary?.prevValBil ?? 0);
+
+    const curLineColor = curHigher ? '#10b981' : '#f97316';
+    const curFillColor = curHigher ? 'rgba(16, 185, 129, 0.26)' : 'rgba(249, 115, 22, 0.22)';
+
+    const curCustomHover = times.map((_, idx) => {
+      const c = curArr[idx];
+      if (c === null || c === undefined) return '';
+      const p = prevArr[idx];
+      let pctTxt = '';
+      if (p !== null && p !== undefined && p > 0) {
+        const diffPct = ((c - p) / p) * 100;
+        pctTxt = ` (${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(1)}% vs hôm trước)`;
+      }
+      return `${fmtNum(c, dec)} ${unit}${pctTxt}`;
+    });
+
+    const traces: any[] = [
+      {
+        type: 'scatter',
+        mode: 'lines',
+        name: `Phiên trước (${liqResp.prevDateShort || '—'})`,
+        x: times,
+        y: prevArr,
+        fill: 'tozeroy',
+        fillcolor: 'rgba(148, 163, 184, 0.22)',
+        line: { color: '#64748b', width: 1.8 },
+        hovertemplate: `Phiên trước: <b>%{y:,.${dec}f} ${unit}</b><extra></extra>`,
+      },
+    ];
+
+    if (liqShowAvg5 && (liqResp.avgSessionsCount ?? 0) > 0) {
+      traces.push({
+        type: 'scatter',
+        mode: 'lines',
+        name: `TB ${liqResp.avgSessionsCount} phiên`,
+        x: times,
+        y: avg5Arr,
+        line: { color: '#f59e0b', width: 1.6, dash: 'dot' },
+        hovertemplate: `TB ${liqResp.avgSessionsCount} phiên: <b>%{y:,.${dec}f} ${unit}</b><extra></extra>`,
+      });
+    }
+
+    traces.push({
+      type: 'scatter',
+      mode: 'lines',
+      name: `Hôm nay (${liqResp.curDateShort || '—'})`,
+      x: times,
+      y: curArr,
+      text: curCustomHover,
+      fill: 'tozeroy',
+      fillcolor: curFillColor,
+      line: { color: curLineColor, width: 2.5 },
+      hovertemplate: 'Hôm nay: <b>%{text}</b><extra></extra>',
+    });
+
+    const layout: Record<string, any> = {
+      uirevision: `liq_${liqSym}_${liqMetric}_${liqDate}`,
+      hovermode: 'x unified',
+      margin: { l: 58, r: 22, t: 44, b: 36 },
+      legend: {
+        orientation: 'h',
+        x: 0,
+        y: 1.12,
+        font: { size: 12, color: '#334155' },
+      },
+      xaxis: {
+        type: 'category',
+        tickmode: 'array',
+        tickvals: [
+          '09:00',
+          '09:30',
+          '10:00',
+          '10:30',
+          '11:00',
+          '11:30',
+          '13:00',
+          '13:30',
+          '14:00',
+          '14:30',
+          '15:00',
+        ],
+        showgrid: true,
+        gridcolor: '#f1f5f9',
+        zeroline: false,
+      },
+      yaxis: {
+        title: {
+          text: isVol ? 'KL Khớp lệnh lũy kế (Triệu CP)' : 'GT Khớp lệnh lũy kế (Tỷ VNĐ)',
+          font: { size: 11.5, color: '#64748b' },
+        },
+        showgrid: true,
+        gridcolor: '#e2e8f0',
+        zeroline: false,
+        rangemode: 'tozero',
+      },
+      shapes: [
+        {
+          type: 'line',
+          xref: 'x',
+          yref: 'paper',
+          x0: '11:30',
+          x1: '11:30',
+          y0: 0,
+          y1: 1,
+          line: { dash: 'dash', color: '#cbd5e1', width: 1.2 },
+        },
+      ],
+      annotations: [
+        {
+          xref: 'x',
+          yref: 'paper',
+          x: '11:30',
+          y: 0.99,
+          text: 'Nghỉ trưa',
+          showarrow: false,
+          xanchor: 'left',
+          xshift: 4,
+          font: { size: 10.5, color: '#94a3b8' },
+        },
+      ],
+    };
+
+    return { traces, layout };
+  }, [liqResp, liqMetric, liqShowAvg5, liqSym, liqDate]);
 
   // --- Sub-tab 1.2: Treemap ---
   const [tmExchange, setTmExchange] = useState<'HOSE' | 'HNX' | 'UPCOM'>('HOSE');
@@ -324,6 +591,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
         onChange={(id) => setSubTab(id as any)}
         tabs={[
           { id: 'indices', label: '⏱️ Chỉ Số Trực Tiếp (SSI Realtime)' },
+          { id: 'liquidity', label: '📊 Thanh Khoản Trong Ngày' },
           { id: 'treemap', label: '🗺️ Bản Đồ Nhiệt (Treemap)' },
           { id: 'health', label: '🩺 Sức Khỏe & Ngày Phân Phối' },
         ]}
@@ -376,7 +644,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
           </div>
 
           {idxLoading && !idxData.length && (
-            <LoadingBar text="Đang đồng bộ dữ liệu chỉ số trực tiếp từ SSI..." />
+            <LoadingBar text="Đang đồng bộ dữ liệu chỉ số trực tiếp..." />
           )}
 
           {!selectedIndices.length && (
@@ -387,27 +655,121 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
 
           {idxData.length > 0 && (
             <>
-              {idxMeta.dataSource && (
-                <div className="text-[12.5px] text-slate-600 px-1 tabular-nums">
-                  Nguồn dữ liệu: <strong className="text-slate-800">{idxMeta.dataSource}</strong>
-                  {idxMeta.syncTime && (
-                    <>
-                      {' '}· Đồng bộ: <span className="font-medium text-slate-700">{idxMeta.syncTime}</span>
-                    </>
-                  )}
-                </div>
-              )}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-slate-600 px-1 tabular-nums">
+                {idxMeta.marketTotal && (
+                  <>
+                    <strong className="text-slate-900">
+                      Tổng GTGD 3 sàn ({idxMeta.marketTotal.dateDisplay}):{' '}
+                      <span className="text-[#0284c7]">
+                        {fmtNum(idxMeta.marketTotal.totalValBil, 1)} Tỷ
+                      </span>
+                    </strong>
+                    {idxMeta.marketTotal.valDeltaPct !== null && (
+                      <span
+                        className={`font-bold ${
+                          idxMeta.marketTotal.valDeltaPct >= 0
+                            ? 'text-[#059669]'
+                            : 'text-[#dc2626]'
+                        }`}
+                      >
+                        ({fmtSigned(idxMeta.marketTotal.valDeltaPct, 1, '%')} vs phiên trước)
+                      </span>
+                    )}
+                    <span className="text-slate-300">·</span>
+                    <span>
+                      Khớp lệnh:{' '}
+                      <strong className="text-slate-800">
+                        {fmtNum(idxMeta.marketTotal.nmValBil, 1)} Tỷ
+                      </strong>
+                    </span>
+                    <span className="text-slate-300">·</span>
+                    <span>
+                      Thỏa thuận:{' '}
+                      <strong className="text-slate-800">
+                        {fmtNum(idxMeta.marketTotal.ptValBil, 1)} Tỷ
+                      </strong>
+                    </span>
+                    <span className="text-slate-300">·</span>
+                    <span>
+                      KLGD:{' '}
+                      <strong className="text-slate-800">
+                        {fmtNum(idxMeta.marketTotal.totalVolMil, 1)} Tr CP
+                      </strong>
+                    </span>
+                    <span className="text-slate-300">·</span>
+                  </>
+                )}
+                {idxMeta.dataSource && (
+                  <span>
+                    Nguồn: <strong className="text-slate-800">{idxMeta.dataSource}</strong>
+                    {idxMeta.syncTime && (
+                      <>
+                        {' '}
+                        · Đồng bộ:{' '}
+                        <span className="font-medium text-slate-700">{idxMeta.syncTime}</span>
+                      </>
+                    )}
+                  </span>
+                )}
+              </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
-                {idxData.map((item) => (
-                  <MetricCard
-                    key={item.symbol}
-                    label={`${item.symbol} (${item.tradeDateStr})`}
-                    value={fmtNum(item.lastPx, 2)}
-                    delta={`${fmtSigned(item.delta, 2)} (${fmtSigned(item.pct, 2, '%')})`}
-                    deltaPositive={item.delta > 0 ? true : item.delta < 0 ? false : null}
-                  />
-                ))}
+                {idxData.map((item) => {
+                  const pxColor =
+                    item.delta > 0
+                      ? 'text-[#059669]'
+                      : item.delta < 0
+                      ? 'text-[#dc2626]'
+                      : 'text-[#d97706]';
+                  const valPct =
+                    typeof item.valDeltaPct === 'number' ? item.valDeltaPct : null;
+                  const valTooltip =
+                    item.nmValBil > 0 || item.ptValBil > 0
+                      ? `Khớp lệnh: ${fmtNum(item.nmValBil, 1)} Tỷ | Thỏa thuận: ${fmtNum(
+                          item.ptValBil,
+                          1
+                        )} Tỷ`
+                      : undefined;
+                  return (
+                    <div
+                      key={item.symbol}
+                      title={valTooltip}
+                      className="bg-white border border-slate-200 border-l-4 border-l-[#0284c7] rounded-[10px] px-3 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+                    >
+                      <div className="text-[11.5px] font-bold text-slate-500 uppercase tracking-wide truncate">
+                        {item.symbol} ({item.tradeDateStr})
+                      </div>
+                      <div className="text-[20px] font-extrabold text-slate-900 mt-0.5 leading-tight tabular-nums">
+                        {fmtNum(item.lastPx, 2)}
+                      </div>
+                      <div className={`text-[12px] font-bold mt-0.5 tabular-nums ${pxColor}`}>
+                        {fmtSigned(item.delta, 2)} ({fmtSigned(item.pct, 2, '%')})
+                      </div>
+                      <div className="mt-2 pt-1.5 border-t border-slate-100 space-y-0.5 text-[11.5px] tabular-nums">
+                        <div className="flex items-baseline justify-between gap-1">
+                          <span className="text-slate-500">GTGD:</span>
+                          <span className="font-bold text-slate-900">
+                            {item.totalValBil > 0 ? `${fmtNum(item.totalValBil, 1)} Tỷ` : '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-1 text-[11px]">
+                          <span className="text-slate-500">
+                            KL: {item.totalVolMil > 0 ? `${fmtNum(item.totalVolMil, 1)} Tr` : '—'}
+                          </span>
+                          {valPct !== null && (
+                            <span
+                              className={`font-semibold ${
+                                valPct >= 0 ? 'text-[#059669]' : 'text-[#dc2626]'
+                              }`}
+                            >
+                              {fmtSigned(valPct, 1, '%')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               {indicesChart && (
@@ -417,6 +779,318 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
                     layout={indicesChart.layout}
                     height={indicesChart.height}
                   />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {subTab === 'liquidity' && (
+        <div className="space-y-3">
+          <div className="bg-white border border-slate-200 rounded-[10px] p-3 space-y-2.5">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
+              <div className="lg:col-span-6">
+                <div className="text-[12px] font-bold text-slate-600 mb-1">
+                  Chỉ số / Sàn theo dõi thanh khoản
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {LIQUIDITY_SYMBOLS.map((opt) => {
+                    const active = liqSym === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setLiqSym(opt.id)}
+                        className={`px-3 py-1 rounded-md text-[12.5px] font-bold border transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-[#0284c7] text-white border-[#0284c7]'
+                            : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="lg:col-span-3">
+                <div className="text-[12px] font-bold text-slate-600 mb-1">Hiển thị theo</div>
+                <div className="grid grid-cols-2 rounded-md overflow-hidden border border-slate-300">
+                  <button
+                    type="button"
+                    onClick={() => setLiqMetric('vol')}
+                    className={`py-1.5 px-2 text-[12px] font-bold transition-colors cursor-pointer ${
+                      liqMetric === 'vol'
+                        ? 'bg-[#0284c7] text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    KL (Triệu CP)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLiqMetric('val')}
+                    className={`py-1.5 px-2 text-[12px] font-bold border-l border-slate-300 transition-colors cursor-pointer ${
+                      liqMetric === 'val'
+                        ? 'bg-[#0284c7] text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    GT Khớp (Tỷ)
+                  </button>
+                </div>
+              </div>
+
+              <div className="lg:col-span-2">
+                <FieldLabel label="Ngày giao dịch">
+                  <input
+                    type="date"
+                    value={liqDate}
+                    onChange={(e) => setLiqDate(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+
+              <div className="lg:col-span-1">
+                <PrimaryButton
+                  onClick={() => loadLiquidity(true, false)}
+                  loading={liqLoading}
+                  className="w-full"
+                >
+                  🔄
+                </PrimaryButton>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[12.5px] text-slate-600">
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={liqShowAvg5}
+                  onChange={(e) => setLiqShowAvg5(e.target.checked)}
+                  className="rounded border-slate-300 text-[#0284c7] focus:ring-[#0284c7]"
+                />
+                Hiển thị đường trung bình 5 phiên gần nhất
+              </label>
+
+              {liqResp && !liqResp.empty && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums">
+                  <strong className="text-slate-900">
+                    {liqSym === 'ALL3' ? 'Toàn thị trường (HOSE + HNX + UPCOM)' : liqSym}
+                  </strong>
+                  <span className="text-slate-300">·</span>
+                  <span>
+                    {liqResp.isLiveNow
+                      ? `Trực tiếp đến ${liqResp.cutoffTime}`
+                      : `Phiên ${liqResp.curDateDisplay} (đến ${liqResp.cutoffTime})`}
+                  </span>
+                  {liqResp.prevDateDisplay && (
+                    <>
+                      <span className="text-slate-300">·</span>
+                      <span>So với phiên trước: {liqResp.prevDateDisplay}</span>
+                    </>
+                  )}
+                  <span className="text-slate-300">·</span>
+                  <span>Nguồn: {liqResp.source || 'VNDirect'}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {liqLoading && !liqResp && (
+            <LoadingBar text={`Đang tải dữ liệu thanh khoản trong ngày cho ${liqSym}...`} />
+          )}
+
+          {liqError && (
+            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
+              {liqError}
+            </div>
+          )}
+
+          {liqResp && liqResp.empty && !liqLoading && (
+            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
+              Không có dữ liệu khớp lệnh theo phút cho {liqSym} quanh ngày đã chọn.
+            </div>
+          )}
+
+          {liqResp && !liqResp.empty && liqResp.summary && (
+            <>
+              {(() => {
+                const s = liqResp.summary!;
+                const isVol = liqMetric === 'vol';
+                const unit = isVol ? 'Tr CP' : 'Tỷ';
+                const dec = isVol ? 2 : 1;
+                const curVal = isVol ? s.curVolMil : s.curValBil;
+                const prevVal = isVol ? s.prevVolMil : s.prevValBil;
+                const diffVal = isVol ? s.volDiffMil : s.valDiffBil;
+                const diffPct = isVol ? s.volDiffPct : s.valDiffPct;
+                const avg5Val = isVol ? s.avg5VolMil : s.avg5ValBil;
+                const vsAvg5Pct = isVol ? s.volVsAvg5Pct : s.valVsAvg5Pct;
+                const prevSeries = isVol ? liqResp.series?.prevVol : liqResp.series?.prevVal;
+                const prevFullDay =
+                  prevSeries && prevSeries.length
+                    ? prevSeries[prevSeries.length - 1] ?? prevVal
+                    : prevVal;
+
+                return (
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                    <MetricCard
+                      label={`${isVol ? 'KL' : 'GT'} Khớp Lệnh (${liqResp.curDateShort} · ${
+                        liqResp.cutoffTime
+                      })`}
+                      value={`${fmtNum(curVal, dec)} ${unit}`}
+                      delta={
+                        diffPct !== null
+                          ? `${fmtSigned(diffPct, 2, '%')} (${fmtSigned(diffVal, dec)} ${unit}) vs ${
+                              liqResp.prevDateShort
+                            }`
+                          : undefined
+                      }
+                      deltaPositive={
+                        diffPct !== null ? (diffPct > 0 ? true : diffPct < 0 ? false : null) : null
+                      }
+                    />
+                    <MetricCard
+                      label={`Cùng Thời Điểm (${liqResp.prevDateShort || '—'})`}
+                      value={`${fmtNum(prevVal, dec)} ${unit}`}
+                      delta={`Cả phiên ${liqResp.prevDateShort || '—'}: ${fmtNum(
+                        prevFullDay,
+                        dec
+                      )} ${unit}`}
+                      deltaPositive={null}
+                    />
+                    <MetricCard
+                      label={`TB ${liqResp.avgSessionsCount || 5} Phiên Cùng Giờ`}
+                      value={`${fmtNum(avg5Val, dec)} ${unit}`}
+                      delta={
+                        vsAvg5Pct !== null
+                          ? `${fmtSigned(vsAvg5Pct, 2, '%')} so với TB ${
+                              liqResp.avgSessionsCount || 5
+                            } phiên`
+                          : undefined
+                      }
+                      deltaPositive={
+                        vsAvg5Pct !== null
+                          ? vsAvg5Pct > 0
+                            ? true
+                            : vsAvg5Pct < 0
+                            ? false
+                            : null
+                          : null
+                      }
+                    />
+                    <MetricCard
+                      label={`Tổng GTGD Phiên (${liqResp.curDateShort})`}
+                      value={
+                        s.officialTotalValBil > 0
+                          ? `${fmtNum(s.officialTotalValBil, 1)} Tỷ`
+                          : `${fmtNum(s.curValBil, 1)} Tỷ`
+                      }
+                      delta={
+                        s.officialTotalValBil > 0
+                          ? `KL: ${fmtNum(s.officialNmValBil, 1)} · TT: ${fmtNum(
+                              s.officialPtValBil,
+                              1
+                            )} Tỷ`
+                          : undefined
+                      }
+                      deltaPositive={null}
+                    />
+                  </div>
+                );
+              })()}
+
+              {liquidityChart && (
+                <div className="bg-white border border-slate-200 rounded-[10px] p-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-1">
+                    <h4 className="font-bold text-[14.5px] text-slate-900">
+                      Biểu đồ {liqMetric === 'vol' ? 'Khối lượng' : 'Giá trị'} khớp lệnh lũy kế trong
+                      ngày — {liqSym === 'ALL3' ? 'Toàn thị trường (3 sàn)' : liqSym}
+                    </h4>
+                    <span className="text-[11.5px] text-slate-500">
+                      Đường màu xanh khi thanh khoản cao hơn phiên trước, màu cam khi thấp hơn
+                    </span>
+                  </div>
+                  <PlotlyChart
+                    data={liquidityChart.traces}
+                    layout={liquidityChart.layout}
+                    height={430}
+                  />
+                </div>
+              )}
+
+              {liqResp.milestones && liqResp.milestones.length > 0 && (
+                <div className="bg-white border border-slate-200 rounded-[10px] p-3">
+                  <h4 className="font-bold text-[14.5px] text-slate-900 mb-2">
+                    So sánh thanh khoản lũy kế theo khung giờ ({liqResp.curDateShort} vs{' '}
+                    {liqResp.prevDateShort || '—'})
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px] border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                          <th className="py-2 px-2.5 text-left">Khung giờ</th>
+                          <th className="py-2 px-2.5 text-right">
+                            KL {liqResp.curDateShort} (Tr CP)
+                          </th>
+                          <th className="py-2 px-2.5 text-right">
+                            KL {liqResp.prevDateShort || 'Trước'} (Tr CP)
+                          </th>
+                          <th className="py-2 px-2.5 text-right">Chênh lệch KL</th>
+                          <th className="py-2 px-2.5 text-right">
+                            GT {liqResp.curDateShort} (Tỷ)
+                          </th>
+                          <th className="py-2 px-2.5 text-right">
+                            GT {liqResp.prevDateShort || 'Trước'} (Tỷ)
+                          </th>
+                          <th className="py-2 px-2.5 text-right">Chênh lệch GT</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {liqResp.milestones.map((m) => (
+                          <tr
+                            key={m.time}
+                            className="border-b border-slate-100 hover:bg-slate-50 tabular-nums"
+                          >
+                            <td className="py-2 px-2.5 font-bold text-slate-800">{m.time}</td>
+                            <td className="py-2 px-2.5 text-right font-semibold text-slate-900">
+                              {m.curVol !== null ? fmtNum(m.curVol, 2) : '—'}
+                            </td>
+                            <td className="py-2 px-2.5 text-right text-slate-600">
+                              {m.prevVol !== null ? fmtNum(m.prevVol, 2) : '—'}
+                            </td>
+                            <td
+                              className={`py-2 px-2.5 text-right ${
+                                m.volDiffPct !== null
+                                  ? colorSignedClass(m.volDiffPct)
+                                  : 'text-slate-400'
+                              }`}
+                            >
+                              {m.volDiffPct !== null ? fmtSigned(m.volDiffPct, 2, '%') : '—'}
+                            </td>
+                            <td className="py-2 px-2.5 text-right font-semibold text-slate-900">
+                              {m.curVal !== null ? fmtNum(m.curVal, 1) : '—'}
+                            </td>
+                            <td className="py-2 px-2.5 text-right text-slate-600">
+                              {m.prevVal !== null ? fmtNum(m.prevVal, 1) : '—'}
+                            </td>
+                            <td
+                              className={`py-2 px-2.5 text-right ${
+                                m.valDiffPct !== null
+                                  ? colorSignedClass(m.valDiffPct)
+                                  : 'text-slate-400'
+                              }`}
+                            >
+                              {m.valDiffPct !== null ? fmtSigned(m.valDiffPct, 2, '%') : '—'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </>
