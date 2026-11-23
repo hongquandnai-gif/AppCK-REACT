@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { INDUSTRY_GROUPS, MA_WINDOWS } from '../shared/constants';
+import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { patchStockRowsWithTicks } from '../utils/livePatch';
 import {
   FieldLabel,
   LoadingBar,
@@ -19,16 +21,53 @@ import {
   vnTodayIso,
 } from '../utils/format';
 
-export const SectorFlowWorkspace: React.FC = () => {
+interface Props {
+  isActive?: boolean;
+}
+
+export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
+  const { catalog, ticks, tickVersion, liveAuto } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'ma' | 'mf'>('ma');
 
+  // Unified SSI ICB Level-2 industries shared across all tabs
+  const sectorOptions = useMemo(() => {
+    const raw = catalog?.industries?.length ? catalog.industries : INDUSTRY_GROUPS;
+    return raw.filter((g) => g !== 'Chỉ số');
+  }, [catalog]);
+
   // 2.1 Sector MA
-  const sectorOptions = useMemo(() => INDUSTRY_GROUPS.filter((g) => g !== 'Chỉ số'), []);
-  const [indChoice, setIndChoice] = useState(sectorOptions[0]);
+  const [maExchange, setMaExchange] = useState<'HOSE' | 'HNX' | 'UPCOM' | 'ALL'>('HOSE');
+  const [indChoice, setIndChoice] = useState('Tất cả ngành');
   const [maAsof, setMaAsof] = useState(today);
   const [secMaRes, setSecMaRes] = useState<{ mode: 'all' | 'group'; rows: any[] } | null>(null);
   const [secMaLoading, setSecMaLoading] = useState(false);
+
+  useEffect(() => {
+    if (sectorOptions.length && !sectorOptions.includes(indChoice)) {
+      setIndChoice(sectorOptions[0]);
+    }
+  }, [sectorOptions, indChoice]);
+
+  const groupSymbols = useMemo(() => {
+    if (secMaRes?.mode !== 'group' || !secMaRes.rows?.length) return [];
+    return secMaRes.rows.map((r) => String(r.symbol || '')).filter(Boolean);
+  }, [secMaRes]);
+
+  useSubscribeSymbols(
+    groupSymbols,
+    isActive && subTab === 'ma' && maAsof === today && liveAuto && groupSymbols.length > 0
+  );
+
+  // Patch live prices & % change in-place on per-industry stock rows without interrupting table scroll
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'ma' || maAsof !== today) return;
+    setSecMaRes((prev) => {
+      if (!prev || prev.mode !== 'group' || !prev.rows.length) return prev;
+      const nextRows = patchStockRowsWithTicks(prev.rows, ticks);
+      return nextRows === prev.rows ? prev : { ...prev, rows: nextRows };
+    });
+  }, [tickVersion, ticks, liveAuto, isActive, subTab, maAsof, today]);
 
   const runSectorMa = async () => {
     setSecMaLoading(true);
@@ -36,7 +75,7 @@ export const SectorFlowWorkspace: React.FC = () => {
       const resp = await fetch('/api/sector-ma', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ industry: indChoice, date: maAsof }),
+        body: JSON.stringify({ industry: indChoice, date: maAsof, exchange: maExchange }),
       });
       if (resp.ok) setSecMaRes(await resp.json());
     } finally {
@@ -48,7 +87,7 @@ export const SectorFlowWorkspace: React.FC = () => {
     if (!secMaRes?.rows.length) return;
     if (secMaRes.mode === 'all') {
       downloadCsv(
-        `sector_ma_${maAsof}.csv`,
+        `sector_ma_${maExchange}_${maAsof}.csv`,
         ['Ngành', 'Phân loại', '% Mạnh (>MA20)', '% Yếu (<MA50)', 'Tổng mã', 'Mã nổi bật', 'MA tham chiếu', 'Δ (%)'],
         secMaRes.rows.map((r) => [
           r.industry,
@@ -63,7 +102,7 @@ export const SectorFlowWorkspace: React.FC = () => {
       );
     } else {
       downloadCsv(
-        `sector_ma_${maAsof}.csv`,
+        `sector_ma_${maExchange}_${maAsof}.csv`,
         ['Mã', 'Giá', '% Thay đổi', ...MA_WINDOWS.map((w) => `MA${w}`)],
         secMaRes.rows.map((r) => [
           r.symbol,
@@ -76,6 +115,7 @@ export const SectorFlowWorkspace: React.FC = () => {
   };
 
   // 2.2 Money Flow
+  const [mfExchange, setMfExchange] = useState<'HOSE' | 'HNX' | 'UPCOM' | 'ALL'>('HOSE');
   const [mfDate, setMfDate] = useState(today);
   const [mfDays, setMfDays] = useState(10);
   const [mfMethod, setMfMethod] = useState<'dp' | 'stp' | 'cmf'>('dp');
@@ -88,7 +128,7 @@ export const SectorFlowWorkspace: React.FC = () => {
       const resp = await fetch('/api/money-flow', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: mfDate, days: mfDays }),
+        body: JSON.stringify({ date: mfDate, days: mfDays, exchange: mfExchange }),
       });
       if (resp.ok) {
         const json = await resp.json();
@@ -122,8 +162,22 @@ export const SectorFlowWorkspace: React.FC = () => {
       {subTab === 'ma' && (
         <div className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-4">
-              <FieldLabel label="Nhóm ngành">
+            <div className="md:col-span-2">
+              <FieldLabel label="Sàn">
+                <select
+                  value={maExchange}
+                  onChange={(e) => setMaExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM' | 'ALL')}
+                  className={inputCls}
+                >
+                  <option value="HOSE">HOSE</option>
+                  <option value="HNX">HNX</option>
+                  <option value="UPCOM">UPCOM</option>
+                  <option value="ALL">Tất cả 3 sàn</option>
+                </select>
+              </FieldLabel>
+            </div>
+            <div className="md:col-span-3">
+              <FieldLabel label="Nhóm ngành (SSI ICB)">
                 <select
                   value={indChoice}
                   onChange={(e) => setIndChoice(e.target.value)}
@@ -137,7 +191,7 @@ export const SectorFlowWorkspace: React.FC = () => {
                 </select>
               </FieldLabel>
             </div>
-            <div className="md:col-span-3">
+            <div className="md:col-span-2">
               <FieldLabel label="Ngày tra cứu">
                 <input
                   type="date"
@@ -161,7 +215,7 @@ export const SectorFlowWorkspace: React.FC = () => {
             </div>
           </div>
 
-          {secMaLoading && <LoadingBar text="Đang quét đường trung bình MA từ SSI..." />}
+          {secMaLoading && <LoadingBar text="Đang quét đường trung bình MA theo chuẩn ngành SSI..." />}
 
           {secMaRes && secMaRes.rows.length > 0 && (
             <div className="bg-white border border-slate-200 rounded-[10px] p-2 overflow-x-auto">
@@ -169,7 +223,7 @@ export const SectorFlowWorkspace: React.FC = () => {
                 <table className="w-full text-[13px] border-collapse">
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
-                      <th className="py-2 px-3">Ngành</th>
+                      <th className="py-2 px-3">Ngành (SSI ICB)</th>
                       <th className="py-2 px-3">Phân loại</th>
                       <th className="py-2 px-3 text-right">% Mạnh (&gt;MA20)</th>
                       <th className="py-2 px-3 text-right">% Yếu (&lt;MA50)</th>
@@ -243,7 +297,21 @@ export const SectorFlowWorkspace: React.FC = () => {
       {subTab === 'mf' && (
         <div className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-3">
+            <div className="md:col-span-2">
+              <FieldLabel label="Sàn">
+                <select
+                  value={mfExchange}
+                  onChange={(e) => setMfExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM' | 'ALL')}
+                  className={inputCls}
+                >
+                  <option value="HOSE">HOSE</option>
+                  <option value="HNX">HNX</option>
+                  <option value="UPCOM">UPCOM</option>
+                  <option value="ALL">Tất cả 3 sàn</option>
+                </select>
+              </FieldLabel>
+            </div>
+            <div className="md:col-span-2">
               <FieldLabel label="Ngày kết thúc">
                 <input
                   type="date"
@@ -265,7 +333,7 @@ export const SectorFlowWorkspace: React.FC = () => {
                 />
               </FieldLabel>
             </div>
-            <div className="md:col-span-4">
+            <div className="md:col-span-3">
               <FieldLabel label="Phương pháp">
                 <select
                   value={mfMethod}
@@ -285,14 +353,14 @@ export const SectorFlowWorkspace: React.FC = () => {
             </div>
           </div>
 
-          {mfLoading && <LoadingBar text="Đang tải dữ liệu dòng tiền toàn sàn từ SSI..." />}
+          {mfLoading && <LoadingBar text="Đang tải dữ liệu dòng tiền theo nhóm ngành SSI..." />}
 
           {mfSorted.length > 0 && (
             <div className="bg-white border border-slate-200 rounded-[10px] p-2 overflow-x-auto">
               <table className="w-full text-[13px] border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
-                    <th className="py-2 px-3">Ngành</th>
+                    <th className="py-2 px-3">Ngành (SSI ICB)</th>
                     <th className="py-2 px-3 text-right">Dòng tiền ròng (Tỷ VNĐ)</th>
                     <th className="py-2 px-3 text-right">Tổng GTGD (Tỷ VNĐ)</th>
                     <th className="py-2 px-3 text-right">CMF (N phiên)</th>

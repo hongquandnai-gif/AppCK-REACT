@@ -1,6 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ALL_MAIN_INDICES, getVnTreemapColor } from '../shared/constants';
 import { PlotlyChart } from '../components/PlotlyChart';
+import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { patchIndicesWithTicks, patchTreemapWithTicks } from '../utils/livePatch';
 import {
   FieldLabel,
   LoadingBar,
@@ -20,8 +22,10 @@ import {
 } from '../utils/format';
 
 interface Props {
-  liveAuto: boolean;
+  isActive?: boolean;
 }
+
+const TREEMAP_WILDCARD = ['*'];
 
 interface MarketTotalSummary {
   dateDisplay: string;
@@ -95,7 +99,8 @@ const LIQUIDITY_SYMBOLS: Array<{ id: string; label: string }> = [
   { id: 'ALL3', label: 'Toàn TT (3 sàn)' },
 ];
 
-export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
+export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) => {
+  const { liveAuto, ticks, tickVersion, syncVersion } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'indices' | 'liquidity' | 'treemap' | 'health'>('indices');
 
@@ -140,14 +145,30 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
     [idxDate, selectedIndices]
   );
 
+  useSubscribeSymbols(
+    selectedIndices,
+    isActive && subTab === 'indices' && idxDate === today && liveAuto
+  );
+
   useEffect(() => {
     if (subTab !== 'indices') return;
     loadIndices(false, false);
-    if (liveAuto && idxDate === today) {
-      const id = setInterval(() => loadIndices(false, true), 5000);
-      return () => clearInterval(id);
-    }
-  }, [subTab, liveAuto, idxDate, today, loadIndices]);
+  }, [subTab, loadIndices]);
+
+  // Patch live index prices & values in-place on WS ticks without interrupting chart zoom/hover
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'indices' || idxDate !== today) return;
+    setIdxData((prev) => patchIndicesWithTicks(prev, ticks));
+  }, [tickVersion, ticks, liveAuto, isActive, subTab, idxDate, today]);
+
+  // Silently reconcile index candles & official total GTGD when server pushes a sync event
+  const lastIdxSyncRef = useRef(syncVersion.indices);
+  useEffect(() => {
+    if (syncVersion.indices === lastIdxSyncRef.current) return;
+    lastIdxSyncRef.current = syncVersion.indices;
+    if (!liveAuto || !isActive || subTab !== 'indices' || idxDate !== today) return;
+    loadIndices(false, true);
+  }, [syncVersion.indices, liveAuto, isActive, subTab, idxDate, today, loadIndices]);
 
   const indicesChart = useMemo(() => {
     if (!idxData.length) return null;
@@ -268,14 +289,29 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
     [liqSym, liqDate]
   );
 
+  const liqSubSyms = useMemo(
+    () => (liqSym === 'ALL3' ? ['VNINDEX', 'HNX', 'UPCOM'] : [liqSym]),
+    [liqSym]
+  );
+
+  useSubscribeSymbols(
+    liqSubSyms,
+    isActive && subTab === 'liquidity' && liqDate === today && liveAuto
+  );
+
   useEffect(() => {
     if (subTab !== 'liquidity') return;
     loadLiquidity(false, false);
-    if (liveAuto && liqDate === today) {
-      const id = setInterval(() => loadLiquidity(false, true), 5000);
-      return () => clearInterval(id);
-    }
-  }, [subTab, liveAuto, liqDate, today, loadLiquidity]);
+  }, [subTab, loadLiquidity]);
+
+  // Silently reconcile intraday liquidity curves on WS index sync events (zero setInterval)
+  const lastLiqSyncRef = useRef(syncVersion.indices);
+  useEffect(() => {
+    if (syncVersion.indices === lastLiqSyncRef.current) return;
+    lastLiqSyncRef.current = syncVersion.indices;
+    if (!liveAuto || !isActive || subTab !== 'liquidity' || liqDate !== today) return;
+    loadLiquidity(false, true);
+  }, [syncVersion.indices, liveAuto, isActive, subTab, liqDate, today, loadLiquidity]);
 
   const liquidityChart = useMemo(() => {
     if (!liqResp || liqResp.empty || !liqResp.times?.length || !liqResp.series) return null;
@@ -444,14 +480,30 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ liveAuto }) => {
     [tmExchange, tmDate, tmSizeMode]
   );
 
+  useSubscribeSymbols(
+    TREEMAP_WILDCARD,
+    isActive && subTab === 'treemap' && tmDate === today && liveAuto
+  );
+
   useEffect(() => {
     if (subTab !== 'treemap') return;
     loadTreemap(false, false);
-    if (liveAuto && tmDate === today) {
-      const id = setInterval(() => loadTreemap(false, true), 5000);
-      return () => clearInterval(id);
-    }
-  }, [subTab, liveAuto, tmDate, today, loadTreemap]);
+  }, [subTab, loadTreemap]);
+
+  // Patch treemap stock tiles & up/down/ref counts in-place from WS ticks
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'treemap' || tmDate !== today) return;
+    setTmResp((prev: any) => patchTreemapWithTicks(prev, ticks, tmSizeMode));
+  }, [tickVersion, ticks, tmSizeMode, liveAuto, isActive, subTab, tmDate, today]);
+
+  // Silently reconcile full board on WS board sync events
+  const lastTmSyncRef = useRef(syncVersion.board);
+  useEffect(() => {
+    if (syncVersion.board === lastTmSyncRef.current) return;
+    lastTmSyncRef.current = syncVersion.board;
+    if (!liveAuto || !isActive || subTab !== 'treemap' || tmDate !== today) return;
+    loadTreemap(false, true);
+  }, [syncVersion.board, liveAuto, isActive, subTab, tmDate, today, loadTreemap]);
 
   const treemapPlot = useMemo(() => {
     const rows: any[] = tmResp?.rows || [];

@@ -3,8 +3,15 @@ import {
   ALL_MAIN_INDICES,
   HARDCODED_HOSE_INDUSTRIES_MAPPING,
   INDEX_SYMBOLS,
-  isPennyStock,
 } from '../src/shared/constants.ts';
+import {
+  buildIndustryMapFromCatalog,
+  classifySsiStock,
+  selectCatalogSymbols,
+  type ClassifiedStockMeta,
+} from './ssiClassifier.ts';
+
+export { buildIndustryMapFromCatalog, selectCatalogSymbols };
 
 export type DataSource = 'SSI' | 'VNDirect' | 'Fallback';
 
@@ -40,16 +47,7 @@ export interface LiveTick {
   time: string;
 }
 
-export interface StockMeta {
-  symbol: string;
-  companyName: string;
-  industry: string;
-  exchange: 'HOSE' | 'HNX' | 'UPCOM' | 'INDEX';
-  refPrice: number;
-  ceiling: number;
-  floor: number;
-  isIndex?: boolean;
-}
+export type StockMeta = ClassifiedStockMeta;
 
 export interface FullStockCatalog {
   stocks: Record<string, StockMeta>;
@@ -63,6 +61,7 @@ export interface FullStockCatalog {
   };
   industries: string[];
   source: DataSource;
+  classificationStandard: string;
 }
 
 export interface ExchangeBoardResult {
@@ -323,21 +322,24 @@ let fullCatalogInflight: Promise<FullStockCatalog> | null = null;
 const CATALOG_CACHE_TTL = 3600_000;
 const CATALOG_PARTIAL_TTL = 15_000;
 
-async function fetchVndirectIndustryMap(): Promise<Record<string, string>> {
-  const map: Record<string, string> = {};
+async function fetchVndirectIndustryMap(): Promise<
+  Record<string, { icbCode: string; industryName: string }>
+> {
+  const map: Record<string, { icbCode: string; industryName: string }> = {};
   const payload = await fetchVndirectJson(
     'https://api-finfo.vndirect.com.vn/v4/industry_classification?q=industryLevel:2&size=100',
     12000
   );
   const items: any[] = Array.isArray(payload?.data) ? payload.data : [];
   for (const item of items) {
+    const icbCode = String(item?.industryCode || '').trim();
     const indName = String(item?.vietnameseName || '').trim();
     const codesRaw = String(item?.codeList || '');
     if (!indName || !codesRaw) continue;
     for (const rawCode of codesRaw.split(',')) {
       const sym = rawCode.trim().toUpperCase();
       if (isValidStockCode(sym) && !map[sym]) {
-        map[sym] = indName;
+        map[sym] = { icbCode, industryName: indName };
       }
     }
   }
@@ -357,7 +359,7 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
     const stockDict: Record<string, StockMeta> = {};
     let source: DataSource = 'Fallback';
 
-    // Try SSI REST for all 3 exchanges first if not WAF-blocked
+    // 1. Primary: SSI Official Exchange API (HOSE + HNX + UPCOM) with automatic SSI ICB classification
     if (!isSsiRestBlocked()) {
       const exchanges: ('HOSE' | 'HNX' | 'UPCOM')[] = ['HOSE', 'HNX', 'UPCOM'];
       const ssiPayloads = await Promise.all(
@@ -372,19 +374,18 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
         const items: any[] = Array.isArray(payload?.data) ? payload.data : [];
         for (const item of items) {
           const sym = String(item?.stockSymbol || item?.code || '').trim().toUpperCase();
-          if (!isValidStockCode(sym)) continue;
-          const ind =
-            HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] ??
-            (isPennyStock(sym) ? 'Penny' : item?.industryName || 'Khác');
-          stockDict[sym] = {
+          const classified = classifySsiStock({
             symbol: sym,
             companyName: String(item?.companyNameVi || item?.companyNameEn || sym).trim(),
-            industry: ind,
             exchange: ex,
+            icbCode: item?.icbCode || item?.subSectorCode || item?.sectorCode || null,
+            industryName: item?.industryName || item?.sectorName || null,
             refPrice: toThousandVnd(item?.refPrice),
             ceiling: toThousandVnd(item?.ceiling),
             floor: toThousandVnd(item?.floor),
-          };
+          });
+          if (!classified) continue;
+          stockDict[classified.symbol] = classified;
           ssiCount++;
         }
       });
@@ -394,7 +395,7 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
       }
     }
 
-    // Fallback to VNDirect v4/stocks (single combined 3-exchange query) + industry_classification
+    // 2. Fallback when SSI REST is WAF-blocked (403): VNDirect 3-exchange list classified into the exact same SSI ICB Level-2 standard
     if (Object.keys(stockDict).length < 500) {
       const [allStocksPayload, vndIndustryMap] = await Promise.all([
         fetchVndirectJson(
@@ -406,7 +407,6 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
 
       let items: any[] = Array.isArray(allStocksPayload?.data) ? allStocksPayload.data : [];
       if (items.length < 500) {
-        // Sequential per-floor fallback if combined query fails
         const floors: ('HOSE' | 'HNX' | 'UPCOM')[] = ['HOSE', 'HNX', 'UPCOM'];
         items = [];
         for (const fl of floors) {
@@ -424,23 +424,22 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
       for (const item of items) {
         const sym = String(item?.code || '').trim().toUpperCase();
         const rawFloor = String(item?.floor || '').trim().toUpperCase();
-        if (!isValidStockCode(sym)) continue;
-        if (rawFloor !== 'HOSE' && rawFloor !== 'HNX' && rawFloor !== 'UPCOM') continue;
-        const ex = rawFloor as 'HOSE' | 'HNX' | 'UPCOM';
-        const ind =
-          HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] ??
-          (isPennyStock(sym) ? 'Penny' : vndIndustryMap[sym] || 'Khác');
-        stockDict[sym] = {
+        const indInfo = vndIndustryMap[sym];
+        const existing = stockDict[sym];
+        const classified = classifySsiStock({
           symbol: sym,
           companyName: String(
             item?.companyName || item?.shortName || item?.companyNameEng || sym
           ).trim(),
-          industry: ind,
-          exchange: ex,
-          refPrice: stockDict[sym]?.refPrice ?? 0,
-          ceiling: stockDict[sym]?.ceiling ?? 0,
-          floor: stockDict[sym]?.floor ?? 0,
-        };
+          exchange: rawFloor,
+          icbCode: indInfo?.icbCode || existing?.icbCode || null,
+          industryName: indInfo?.industryName || existing?.industry || null,
+          refPrice: existing?.refPrice ?? 0,
+          ceiling: existing?.ceiling ?? 0,
+          floor: existing?.floor ?? 0,
+        });
+        if (!classified) continue;
+        stockDict[classified.symbol] = classified;
         vndCount++;
       }
 
@@ -449,33 +448,35 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
       }
     }
 
-    // Ensure all hardcoded V11 PRO symbols are always present even if offline
-    for (const [sym, ind] of Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)) {
-      if (ind === 'Chỉ số') continue;
-      if (isValidStockCode(sym) && !stockDict[sym]) {
-        stockDict[sym] = {
+    // 3. Emergency offline fallback ONLY if both SSI & VNDirect are unreachable
+    if (Object.keys(stockDict).length < 100) {
+      for (const [sym, legacyInd] of Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)) {
+        if (legacyInd === 'Chỉ số') continue;
+        const classified = classifySsiStock({
           symbol: sym,
           companyName: sym,
-          industry: ind,
           exchange: 'HOSE',
-          refPrice: 0,
-          ceiling: 0,
-          floor: 0,
-        };
+          industryName: legacyInd === 'Penny' ? null : legacyInd,
+        });
+        if (classified && !stockDict[classified.symbol]) {
+          stockDict[classified.symbol] = classified;
+        }
       }
     }
 
-    // Add main market indices
+    // 4. Add main market indices
     for (const idxSym of ALL_MAIN_INDICES) {
       stockDict[idxSym] = {
         symbol: idxSym,
         companyName: INDEX_LABELS[idxSym] || `Chỉ số ${idxSym}`,
         industry: 'Chỉ số',
+        icbCode: 'INDEX',
         exchange: 'INDEX',
         refPrice: 0,
         ceiling: 0,
         floor: 0,
         isIndex: true,
+        isPenny: false,
       };
     }
 
@@ -511,6 +512,7 @@ export async function fetchFullStockCatalog(forceRefresh = false): Promise<FullS
       counts,
       industries,
       source,
+      classificationStandard: 'SSI ICB Level-2',
     };
 
     const isComplete = counts.HOSE > 100 && counts.HNX > 50 && counts.UPCOM > 100;
@@ -1113,6 +1115,43 @@ export class SSIWebSocketManager {
   private pingTimer: NodeJS.Timeout | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private pollCycle = 0;
+  private tickListeners = new Set<(ticks: Record<string, LiveTick>) => void>();
+  private syncListeners = new Set<
+    (ev: { kind: 'board' | 'indices'; syncTime: string; source: 'SSI' | 'VNDirect' }) => void
+  >();
+
+  onTicks(cb: (ticks: Record<string, LiveTick>) => void): () => void {
+    this.tickListeners.add(cb);
+    return () => this.tickListeners.delete(cb);
+  }
+
+  onSync(
+    cb: (ev: { kind: 'board' | 'indices'; syncTime: string; source: 'SSI' | 'VNDirect' }) => void
+  ): () => void {
+    this.syncListeners.add(cb);
+    return () => this.syncListeners.delete(cb);
+  }
+
+  private emitTicks(ticks: Record<string, LiveTick>) {
+    if (!Object.keys(ticks).length) return;
+    for (const cb of this.tickListeners) {
+      try {
+        cb(ticks);
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
+
+  private emitSync(kind: 'board' | 'indices', syncTime: string, source: 'SSI' | 'VNDirect') {
+    for (const cb of this.syncListeners) {
+      try {
+        cb({ kind, syncTime, source });
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
 
   get isConnected(): boolean {
     return this.connected;
@@ -1323,8 +1362,11 @@ export class SSIWebSocketManager {
     const minuteUnix = Math.floor(Date.now() / 60_000) * 60;
     const targets = new Set([sym, ...(WS_INDEX_CANONICAL_MIRROR[sym] || [])]);
 
+    const emitted: Record<string, LiveTick> = {};
     for (const tSym of targets) {
-      this.liveTicks.set(tSym, { ...tick, symbol: tSym });
+      const mirroredTick = { ...tick, symbol: tSym };
+      this.liveTicks.set(tSym, mirroredTick);
+      emitted[tSym] = mirroredTick;
       const existingBoard = this.liveBoard.get(tSym);
       if (existingBoard) {
         this.liveBoard.set(tSym, {
@@ -1333,6 +1375,7 @@ export class SSIWebSocketManager {
           delta: tick.delta,
           pct: tick.pct,
           volume: tick.volume > 0 ? tick.volume : existingBoard.volume,
+          value_bil: tick.value_bil ?? existingBoard.value_bil,
           time: tick.time,
         });
       }
@@ -1362,6 +1405,7 @@ export class SSIWebSocketManager {
         });
       }
     }
+    this.emitTicks(emitted);
   }
 
   async refreshBoardNow(forceRefresh = false): Promise<Record<string, LiveTick>> {
@@ -1372,26 +1416,40 @@ export class SSIWebSocketManager {
       this.boardSource = res.source;
       this.boardTradeDate = res.tradeDate;
       this.boardMode = res.mode;
+      const changedTicks: Record<string, LiveTick> = {};
       this.liveBoard.clear();
       for (const [sym, item] of Object.entries(res.board)) {
-        // Preserve fresher WS live tick if market is open and we're in EOD fallback mode
-        const wsTick = isVnMarketHours() ? this.liveTicks.get(sym) : undefined;
+        const prevTick = this.liveTicks.get(sym);
+        const wsTick = isVnMarketHours() ? prevTick : undefined;
+        let finalTick: LiveTick;
         if (wsTick && res.mode === 'eod') {
-          this.liveBoard.set(sym, {
+          finalTick = {
             ...item,
             last: wsTick.last,
             delta: wsTick.delta,
             pct: wsTick.pct,
             volume: wsTick.volume > 0 ? wsTick.volume : item.volume,
             time: wsTick.time,
-          });
+          };
+          this.liveBoard.set(sym, finalTick);
         } else {
-          this.liveBoard.set(sym, item);
-          if (res.mode === 'live') {
-            this.liveTicks.set(sym, { ...item });
-          }
+          finalTick = item;
+          this.liveBoard.set(sym, finalTick);
+          this.liveTicks.set(sym, { ...finalTick });
+        }
+        if (
+          !prevTick ||
+          prevTick.last !== finalTick.last ||
+          prevTick.volume !== finalTick.volume ||
+          prevTick.pct !== finalTick.pct
+        ) {
+          changedTicks[sym] = finalTick;
         }
       }
+      if (Object.keys(changedTicks).length > 0) {
+        this.emitTicks(changedTicks);
+      }
+      this.emitSync('board', res.syncTime, res.source);
     }
     return this.getLiveBoard();
   }
@@ -1422,6 +1480,7 @@ export class SSIWebSocketManager {
         }
       })
     );
+    this.emitSync('indices', vnNowParts().hms, this.boardSource);
   }
 
   async ensureIndicesLoaded(symbols: string[]): Promise<void> {
@@ -1499,12 +1558,19 @@ let singletonWsMgr: SSIWebSocketManager | null = null;
 export function getSsiWsManager(): SSIWebSocketManager {
   if (!singletonWsMgr) {
     singletonWsMgr = new SSIWebSocketManager();
-    const hoseSyms = Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)
-      .filter(([, ind]) => ind !== 'Chỉ số')
-      .map(([s]) => s);
-    singletonWsMgr.start([...ALL_MAIN_INDICES, ...hoseSyms]);
-    // Warm up full 3-exchange catalog in the background
-    fetchFullStockCatalog().catch(() => {});
+    singletonWsMgr.start([...ALL_MAIN_INDICES]);
+    // Warm up unified 3-exchange SSI-classified catalog and subscribe HOSE symbols automatically
+    fetchFullStockCatalog()
+      .then((catalog) => {
+        const hoseSyms = selectCatalogSymbols(catalog.stocks, {
+          exchange: 'HOSE',
+          excludePenny: false,
+        });
+        if (hoseSyms.length) {
+          singletonWsMgr?.subscribe(hoseSyms);
+        }
+      })
+      .catch(() => {});
   }
   return singletonWsMgr;
 }

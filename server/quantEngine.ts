@@ -565,7 +565,8 @@ export function runMinerviniScreener(
   rawMap: Record<string, OhlcvBar[]>,
   startDate: string,
   endDate: string,
-  minRs = 70
+  minRs = 70,
+  industryMap: Record<string, string> = HARDCODED_HOSE_INDUSTRIES_MAPPING
 ) {
   interface ProcEntry {
     bars: OhlcvBar[];
@@ -712,7 +713,7 @@ export function runMinerviniScreener(
     ) {
       screened.push({
         symbol: r.symbol,
-        industry: HARDCODED_HOSE_INDUSTRIES_MAPPING[r.symbol] || 'Khác',
+        industry: industryMap[r.symbol] || 'Khác',
         price: Number(r.close.toFixed(2)),
         rsRating: rs,
         phase: phase.title.split('(')[0].trim(),
@@ -872,7 +873,12 @@ function diffCalendarDays(d1: string, d2: string): number {
   return Math.round((t2 - t1) / 86_400_000);
 }
 
-export function runHybridBacktest(rawMap: Record<string, OhlcvBar[]>, p: BacktestParams) {
+export function runHybridBacktest(
+  rawMap: Record<string, OhlcvBar[]>,
+  p: BacktestParams,
+  industryMap: Record<string, string> = HARDCODED_HOSE_INDUSTRIES_MAPPING,
+  pennySet?: Set<string>
+) {
   interface BtStockData {
     bars: OhlcvBar[];
     dateToIdx: Map<string, number>;
@@ -1015,8 +1021,9 @@ export function runHybridBacktest(rawMap: Record<string, OhlcvBar[]>, p: Backtes
   const dailyTopSectors = new Map<string, Set<string>>();
   if (p.filter_top_sectors) {
     const secToSyms = new Map<string, string[]>();
-    for (const [sym, sec] of Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)) {
-      if (!['Chỉ số', 'Penny', 'Khác'].includes(sec) && !isPennyStock(sym) && dataMap.has(sym)) {
+    for (const [sym, sec] of Object.entries(industryMap)) {
+      const symIsPenny = pennySet ? pennySet.has(sym) : isPennyStock(sym);
+      if (!['Chỉ số', 'Penny', 'Khác'].includes(sec) && !symIsPenny && dataMap.has(sym)) {
         const arr = secToSyms.get(sec) || [];
         arr.push(sym);
         secToSyms.set(sec, arr);
@@ -1365,7 +1372,7 @@ export function runHybridBacktest(rawMap: Record<string, OhlcvBar[]>, p: Backtes
       const allowedSectors = p.filter_top_sectors ? dailyTopSectors.get(currentDate) || new Set<string>() : null;
       const secCounts = new Map<string, number>();
       for (const s of currentSymbols) {
-        const sec = HARDCODED_HOSE_INDUSTRIES_MAPPING[s] || 'Khác';
+        const sec = industryMap[s] || 'Khác';
         secCounts.set(sec, (secCounts.get(sec) || 0) + 1);
       }
 
@@ -1381,7 +1388,7 @@ export function runHybridBacktest(rawMap: Record<string, OhlcvBar[]>, p: Backtes
 
       for (const sym of tradableSymbols) {
         if (currentSymbols.has(sym)) continue;
-        const sec = HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || 'Khác';
+        const sec = industryMap[sym] || 'Khác';
         if ((secCounts.get(sec) || 0) >= p.max_per_sector) continue;
 
         const sd = dataMap.get(sym)!;

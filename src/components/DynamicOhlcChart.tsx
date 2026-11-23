@@ -39,7 +39,7 @@ export const DynamicOhlcChart: React.FC<DynamicOhlcChartProps> = ({
 
   useEffect(() => {
     setHoverIdx(null);
-  }, [symbol, bars.length]);
+  }, [symbol]);
 
   const activeBar = useMemo(() => {
     if (!bars.length) return null;

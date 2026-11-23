@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { HARDCODED_HOSE_INDUSTRIES_MAPPING, INDUSTRY_GROUPS } from '../shared/constants';
 import { PlotlyChart } from '../components/PlotlyChart';
 import { SymbolSearchInput } from '../components/SymbolSearchInput';
+import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { patchPortfolioWithTicks } from '../utils/livePatch';
 import {
   FieldLabel,
   LoadingBar,
@@ -11,7 +13,7 @@ import {
   SubTabs,
   inputCls,
 } from '../components/UiPrimitives';
-import type { StockCatalogItem, StockCatalogResponse } from '../types/catalog';
+import type { StockCatalogItem } from '../types/catalog';
 import {
   colorSignedClass,
   colorStatusClass,
@@ -23,8 +25,7 @@ import {
 } from '../utils/format';
 
 interface Props {
-  liveAuto: boolean;
-  catalog: StockCatalogResponse | null;
+  isActive?: boolean;
 }
 
 interface HoldingItem {
@@ -48,7 +49,8 @@ function loadHoldings(): HoldingItem[] {
   }
 }
 
-export const PortfolioBacktestWorkspace: React.FC<Props> = ({ liveAuto, catalog }) => {
+export const PortfolioBacktestWorkspace: React.FC<Props> = ({ isActive = true }) => {
+  const { catalog, liveAuto, ticks, tickVersion } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'portfolio' | 'backtest'>('portfolio');
 
@@ -111,14 +113,26 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ liveAuto, catalog 
     [holdings, cashVnd]
   );
 
+  const holdingSymbols = useMemo(
+    () => holdings.map((h) => h.symbol.trim().toUpperCase()).filter(Boolean),
+    [holdings]
+  );
+
+  useSubscribeSymbols(
+    holdingSymbols,
+    isActive && subTab === 'portfolio' && liveAuto && holdingSymbols.length > 0
+  );
+
   useEffect(() => {
     if (subTab !== 'portfolio') return;
     evaluatePortfolio(false, false);
-    if (liveAuto && holdings.length > 0) {
-      const id = setInterval(() => evaluatePortfolio(false, true), 5000);
-      return () => clearInterval(id);
-    }
-  }, [subTab, liveAuto, holdings.length, evaluatePortfolio]);
+  }, [subTab, evaluatePortfolio]);
+
+  // Instantaneous live P&L & NAV patching from WebSocket ticks (zero setInterval)
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'portfolio' || !holdings.length) return;
+    setPortEval((prev: any) => patchPortfolioWithTicks(prev, ticks, cashVnd));
+  }, [tickVersion, ticks, cashVnd, liveAuto, isActive, subTab, holdings.length]);
 
   const handleAddPosition = () => {
     const sym = newSym.trim().toUpperCase();
@@ -168,8 +182,17 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ liveAuto, catalog 
   };
 
   // --- 5.2 Hybrid Backtest ---
-  const sectorOptions = useMemo(() => INDUSTRY_GROUPS.filter((g) => g !== 'Chỉ số'), []);
-  const [btInd, setBtInd] = useState(sectorOptions[0]);
+  const sectorOptions = useMemo(() => {
+    const raw = catalog?.industries?.length ? catalog.industries : INDUSTRY_GROUPS;
+    return raw.filter((g) => g !== 'Chỉ số');
+  }, [catalog]);
+  const [btInd, setBtInd] = useState('Tất cả ngành');
+
+  useEffect(() => {
+    if (sectorOptions.length && !sectorOptions.includes(btInd)) {
+      setBtInd(sectorOptions[0]);
+    }
+  }, [sectorOptions, btInd]);
   const [btCap, setBtCap] = useState(1_000_000_000);
   const [btStart, setBtStart] = useState('2024-10-17');
   const [btEnd, setBtEnd] = useState(today);

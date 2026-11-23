@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import { MarketStreamProvider, useMarketStream } from './context/MarketStreamContext';
 import { MarketOverviewWorkspace } from './workspaces/MarketOverviewWorkspace';
 import { SectorFlowWorkspace } from './workspaces/SectorFlowWorkspace';
 import { BreakoutScreenerWorkspace } from './workspaces/BreakoutScreenerWorkspace';
 import { ChartAnalysisWorkspace } from './workspaces/ChartAnalysisWorkspace';
 import { PortfolioBacktestWorkspace } from './workspaces/PortfolioBacktestWorkspace';
-import type { StockCatalogResponse } from './types/catalog';
 
 const WORKSPACES = [
   { id: 'market', label: '🌐 Toàn Cảnh Thị Trường' },
@@ -16,76 +16,48 @@ const WORKSPACES = [
 
 type WorkspaceId = (typeof WORKSPACES)[number]['id'];
 
-export default function App() {
+function AppShell() {
   const [activeWs, setActiveWs] = useState<WorkspaceId>('market');
-  const [liveAuto, setLiveAuto] = useState(true);
-  const [catalog, setCatalog] = useState<StockCatalogResponse | null>(null);
-  const [status, setStatus] = useState<{
-    connected: boolean;
-    hoseCount: number;
-    hnxCount: number;
-    upcomCount: number;
-    totalCount: number;
-    dataSource: string;
-    vnClock: string;
-  }>({
-    connected: false,
-    hoseCount: 0,
-    hnxCount: 0,
-    upcomCount: 0,
-    totalCount: 0,
-    dataSource: 'SSI',
-    vnClock: '',
+  const [visitedWs, setVisitedWs] = useState<Record<WorkspaceId, boolean>>({
+    market: true,
+    sector: false,
+    screener: false,
+    chart: false,
+    portfolio: false,
   });
 
-  useEffect(() => {
-    let mounted = true;
-    const fetchCatalog = async () => {
-      try {
-        const resp = await fetch('/api/stocks');
-        if (resp.ok && mounted) {
-          setCatalog(await resp.json());
-        }
-      } catch {
-        // ignore transient network errors
-      }
-    };
-    fetchCatalog();
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  const { wsConnected, upstreamSsiConnected, liveAuto, setLiveAuto, status, catalog } =
+    useMarketStream();
 
-  useEffect(() => {
-    let mounted = true;
-    const fetchStatus = async () => {
-      try {
-        const resp = await fetch('/api/status');
-        if (resp.ok && mounted) {
-          const json = await resp.json();
-          setStatus({
-            connected: Boolean(json.connected),
-            hoseCount: Number(json.hoseCount || 0),
-            hnxCount: Number(json.hnxCount || 0),
-            upcomCount: Number(json.upcomCount || 0),
-            totalCount: Number(json.totalCount || json.hoseCount || 0),
-            dataSource: String(json.dataSource || 'SSI'),
-            vnClock: String(json.vnClock || ''),
-          });
-        }
-      } catch {
-        // ignore transient network errors
-      }
-    };
-    fetchStatus();
-    const id = setInterval(fetchStatus, 10_000);
-    return () => {
-      mounted = false;
-      clearInterval(id);
-    };
-  }, []);
+  const handleSelectWs = (id: WorkspaceId) => {
+    setActiveWs(id);
+    setVisitedWs((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
+  };
 
+  // Trigger a clean Plotly resize whenever switching back to an already-mounted tab
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [activeWs]);
+
+  const hoseCount = catalog?.counts.HOSE || status.hoseCount;
+  const hnxCount = catalog?.counts.HNX || status.hnxCount;
+  const upcomCount = catalog?.counts.UPCOM || status.upcomCount;
   const totalCount = catalog?.counts.total || status.totalCount;
+  const sectorCount = catalog?.industries
+    ? catalog.industries.filter((g) => g !== 'Tất cả ngành' && g !== 'Chỉ số').length
+    : 0;
+
+  const wsBadgeLabel = upstreamSsiConnected
+    ? '● SSI WS Live'
+    : wsConnected
+    ? '● WS Live'
+    : '● WS Đang kết nối';
+
+  const wsBadgeClass =
+    upstreamSsiConnected || wsConnected ? 'text-[#34d399]' : 'text-[#fbbf24]';
 
   return (
     <div className="min-h-screen bg-[#f1f5f9] text-[#0f172a]">
@@ -104,15 +76,19 @@ export default function App() {
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] font-semibold tabular-nums">
-            <span className={status.connected ? 'text-[#34d399]' : 'text-[#fca5a5]'}>
-              {status.connected ? '● SSI WS Live' : '● SSI WS Đang kết nối'}
-            </span>
+            <span className={wsBadgeClass}>{wsBadgeLabel}</span>
             <span className="text-slate-600">·</span>
             <span className="text-slate-200">
               {totalCount > 0
-                ? `${totalCount.toLocaleString('en-US')} mã (HOSE ${status.hoseCount} · HNX ${status.hnxCount} · UPCOM ${status.upcomCount})`
+                ? `${totalCount.toLocaleString('en-US')} mã (HOSE ${hoseCount} · HNX ${hnxCount} · UPCOM ${upcomCount})`
                 : 'Đang tải danh mục 3 sàn...'}
             </span>
+            {sectorCount > 0 && (
+              <>
+                <span className="text-slate-600">·</span>
+                <span className="text-sky-300">SSI ICB ({sectorCount} ngành)</span>
+              </>
+            )}
             {status.vnClock && (
               <>
                 <span className="text-slate-600">·</span>
@@ -122,7 +98,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Flat 5 Workspace Navigation Bar + Live WS Toggle */}
+        {/* Flat 5 Workspace Navigation Bar + Realtime WS Stream Toggle */}
         <nav className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 items-center mb-3">
           {WORKSPACES.map((ws) => {
             const isActive = activeWs === ws.id;
@@ -130,7 +106,7 @@ export default function App() {
               <button
                 key={ws.id}
                 type="button"
-                onClick={() => setActiveWs(ws.id)}
+                onClick={() => handleSelectWs(ws.id)}
                 className={`w-full px-3 py-2 rounded-lg text-[13px] transition-colors cursor-pointer truncate ${
                   isActive
                     ? 'bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold shadow-xs border border-[#0284c7]'
@@ -142,30 +118,57 @@ export default function App() {
             );
           })}
 
-          <label className="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-bold text-slate-700 cursor-pointer select-none">
+          <label
+            className="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-bold text-slate-700 cursor-pointer select-none"
+            title="Cập nhật trực tiếp theo WebSocket không làm gián đoạn thao tác"
+          >
             <input
               type="checkbox"
               checked={liveAuto}
               onChange={(e) => setLiveAuto(e.target.checked)}
               className="w-4 h-4 accent-[#0284c7]"
             />
-            <span>⚡ Live WS (5s)</span>
+            <span>⚡ Cập nhật WS Live</span>
           </label>
         </nav>
 
-        {/* Workspace Content */}
+        {/* Persistent Workspaces — switching tabs never interrupts scans, charts, or inputs */}
         <main>
-          {activeWs === 'market' && <MarketOverviewWorkspace liveAuto={liveAuto} />}
-          {activeWs === 'sector' && <SectorFlowWorkspace />}
-          {activeWs === 'screener' && <BreakoutScreenerWorkspace catalog={catalog} />}
-          {activeWs === 'chart' && (
-            <ChartAnalysisWorkspace liveAuto={liveAuto} catalog={catalog} />
+          {visitedWs.market && (
+            <div className={activeWs === 'market' ? 'block' : 'hidden'}>
+              <MarketOverviewWorkspace isActive={activeWs === 'market'} />
+            </div>
           )}
-          {activeWs === 'portfolio' && (
-            <PortfolioBacktestWorkspace liveAuto={liveAuto} catalog={catalog} />
+          {visitedWs.sector && (
+            <div className={activeWs === 'sector' ? 'block' : 'hidden'}>
+              <SectorFlowWorkspace isActive={activeWs === 'sector'} />
+            </div>
+          )}
+          {visitedWs.screener && (
+            <div className={activeWs === 'screener' ? 'block' : 'hidden'}>
+              <BreakoutScreenerWorkspace isActive={activeWs === 'screener'} />
+            </div>
+          )}
+          {visitedWs.chart && (
+            <div className={activeWs === 'chart' ? 'block' : 'hidden'}>
+              <ChartAnalysisWorkspace isActive={activeWs === 'chart'} />
+            </div>
+          )}
+          {visitedWs.portfolio && (
+            <div className={activeWs === 'portfolio' ? 'block' : 'hidden'}>
+              <PortfolioBacktestWorkspace isActive={activeWs === 'portfolio'} />
+            </div>
           )}
         </main>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <MarketStreamProvider>
+      <AppShell />
+    </MarketStreamProvider>
   );
 }

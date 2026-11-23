@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ALL_MAIN_INDICES,
   HARDCODED_HOSE_INDUSTRIES_MAPPING,
@@ -7,6 +7,8 @@ import {
 } from '../shared/constants';
 import { DynamicOhlcChart } from '../components/DynamicOhlcChart';
 import { SymbolSearchInput } from '../components/SymbolSearchInput';
+import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { patchOhlcBarsWithTick } from '../utils/livePatch';
 import {
   FieldLabel,
   LoadingBar,
@@ -15,7 +17,7 @@ import {
   SubTabs,
   inputCls,
 } from '../components/UiPrimitives';
-import type { StockCatalogItem, StockCatalogResponse } from '../types/catalog';
+import type { StockCatalogItem } from '../types/catalog';
 import {
   addDaysIso,
   colorSignedClass,
@@ -26,13 +28,13 @@ import {
 } from '../utils/format';
 
 interface Props {
-  liveAuto: boolean;
-  catalog: StockCatalogResponse | null;
+  isActive?: boolean;
 }
 
 const FALLBACK_MA_COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'];
 
-export const ChartAnalysisWorkspace: React.FC<Props> = ({ liveAuto, catalog }) => {
+export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => {
+  const { catalog, liveAuto, ticks, tickVersion, syncVersion } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'eod' | 'intraday'>('eod');
 
@@ -132,14 +134,35 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ liveAuto, catalog }) =
     [symSel, hStart, hEnd, hTf, activeMas]
   );
 
+  const eodSubSyms = useMemo(() => {
+    const sym = symSel.trim().toUpperCase();
+    return sym ? [sym] : [];
+  }, [symSel]);
+
+  useSubscribeSymbols(
+    eodSubSyms,
+    isActive && subTab === 'eod' && hEnd >= today && liveAuto && eodSubSyms.length > 0
+  );
+
   useEffect(() => {
     if (subTab !== 'eod') return;
     loadEod(false);
-    if (liveAuto && hEnd >= today) {
-      const id = setInterval(() => loadEod(true), 5000);
-      return () => clearInterval(id);
-    }
-  }, [subTab, liveAuto, hEnd, today, loadEod]);
+  }, [subTab, loadEod]);
+
+  // Patch latest EOD candle in-place from WS ticks without disturbing Plotly zoom/hover
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'eod' || hEnd < today) return;
+    const sym = symSel.trim().toUpperCase();
+    const tick = ticks[sym];
+    if (!tick) return;
+    setEodData((prev: any) => {
+      if (!prev || prev.empty || prev.symbol !== sym || !prev.bars?.length) return prev;
+      const nextBars = patchOhlcBarsWithTick(prev.bars, tick, false);
+      if (nextBars === prev.bars) return prev;
+      const nextAth = Math.max(prev.rawAth || 0, tick.last);
+      return { ...prev, bars: nextBars, rawAth: nextAth };
+    });
+  }, [tickVersion, ticks, symSel, liveAuto, isActive, subTab, hEnd, today]);
 
   const eodMaInfo = useMemo(() => {
     const list = activeMas.map((p, idx) => ({
@@ -216,14 +239,42 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ liveAuto, catalog }) =
     [inSym, inDate, inTf]
   );
 
+  const intraSubSyms = useMemo(() => {
+    const sym = inSym.trim().toUpperCase();
+    return sym ? [sym] : [];
+  }, [inSym]);
+
+  useSubscribeSymbols(
+    intraSubSyms,
+    isActive && subTab === 'intraday' && inDate === today && liveAuto && intraSubSyms.length > 0
+  );
+
   useEffect(() => {
     if (subTab !== 'intraday') return;
     loadIntraday(false, false);
-    if (liveAuto && inDate === today) {
-      const id = setInterval(() => loadIntraday(false, true), 5000);
-      return () => clearInterval(id);
-    }
-  }, [subTab, liveAuto, inDate, today, loadIntraday]);
+  }, [subTab, loadIntraday]);
+
+  // Patch latest intraday candle in-place from WS ticks with zero flicker
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'intraday' || inDate !== today) return;
+    const sym = inSym.trim().toUpperCase();
+    const tick = ticks[sym];
+    if (!tick) return;
+    setIntraData((prev: any) => {
+      if (!prev || prev.empty || prev.symbol !== sym || !prev.bars?.length) return prev;
+      const nextBars = patchOhlcBarsWithTick(prev.bars, tick, !prev.fallbackToDaily);
+      return nextBars === prev.bars ? prev : { ...prev, bars: nextBars };
+    });
+  }, [tickVersion, ticks, inSym, liveAuto, isActive, subTab, inDate, today]);
+
+  // Silently reconcile new intraday minute bars on WS board sync events
+  const lastIntraSyncRef = useRef(syncVersion.board);
+  useEffect(() => {
+    if (syncVersion.board === lastIntraSyncRef.current) return;
+    lastIntraSyncRef.current = syncVersion.board;
+    if (!liveAuto || !isActive || subTab !== 'intraday' || inDate !== today) return;
+    loadIntraday(false, true);
+  }, [syncVersion.board, liveAuto, isActive, subTab, inDate, today, loadIntraday]);
 
   const counts = catalog?.counts;
 

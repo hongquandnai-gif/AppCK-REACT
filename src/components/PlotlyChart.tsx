@@ -23,6 +23,7 @@ export const PlotlyChart: React.FC<PlotlyChartProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const onHoverRef = useRef(onHover);
   const onUnhoverRef = useRef(onUnhover);
+  const listenersBoundRef = useRef(false);
 
   onHoverRef.current = onHover;
   onUnhoverRef.current = onUnhover;
@@ -44,22 +45,15 @@ export const PlotlyChart: React.FC<PlotlyChartProps> = ({
       font: { family: 'Segoe UI, Arial, sans-serif', size: 12, color: '#1e293b' },
       height,
       ...layout,
+      uirevision: layout?.uirevision ?? 'v11_keep_view',
     };
 
     Plotly.react(el, data, mergedLayout, mergedConfig);
 
-    const handleHover = (ev: any) => onHoverRef.current?.(ev);
-    const handleUnhover = () => onUnhoverRef.current?.();
-
-    if (typeof el.removeAllListeners === 'function') {
-      el.removeAllListeners('plotly_hover');
-      el.removeAllListeners('plotly_unhover');
-    }
-    if (onHoverRef.current && typeof el.on === 'function') {
-      el.on('plotly_hover', handleHover);
-    }
-    if (onUnhoverRef.current && typeof el.on === 'function') {
-      el.on('plotly_unhover', handleUnhover);
+    if (!listenersBoundRef.current && typeof el.on === 'function') {
+      el.on('plotly_hover', (ev: any) => onHoverRef.current?.(ev));
+      el.on('plotly_unhover', () => onUnhoverRef.current?.());
+      listenersBoundRef.current = true;
     }
   }, [data, layout, config, height]);
 

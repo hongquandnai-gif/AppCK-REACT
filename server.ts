@@ -1,16 +1,13 @@
 import express from 'express';
+import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import {
-  ALL_MAIN_INDICES,
-  HARDCODED_HOSE_INDUSTRIES_MAPPING,
-  MA_WINDOWS,
-  getSymbolsByIndustry,
-  isPennyStock,
-} from './src/shared/constants.ts';
+import { WebSocketServer, WebSocket as WsClient } from 'ws';
+import { ALL_MAIN_INDICES, MA_WINDOWS } from './src/shared/constants.ts';
 import {
   addDaysToDateStr,
+  buildIndustryMapFromCatalog,
   clearAllCaches,
   fetchBatchOhlcvSsi,
   fetchExchangeBoardWithFallback,
@@ -20,6 +17,7 @@ import {
   getSsiWsManager,
   isSsiRestBlocked,
   isVnMarketHours,
+  selectCatalogSymbols,
   vnNowParts,
   vnTodayStr,
   type IndexSessionStat,
@@ -140,26 +138,57 @@ function resampleBars(bars: OhlcvBar[], tf: 'D' | 'W' | 'M'): OhlcvBar[] {
   return [...buckets.values()].sort((a, b) => a.t - b.t);
 }
 
+async function resolveLiquidUniverse(
+  syms: string[],
+  exchange: 'HOSE' | 'HNX' | 'UPCOM' | 'ALL',
+  refDate: string,
+  maxCap = 260
+): Promise<string[]> {
+  if (syms.length <= maxCap) return syms;
+  const boardsToFetch: ('HOSE' | 'HNX' | 'UPCOM')[] =
+    exchange === 'ALL' ? ['HOSE', 'HNX', 'UPCOM'] : [exchange];
+  const boards = await Promise.all(
+    boardsToFetch.map((ex) => fetchExchangeBoardWithFallback(ex, refDate, false))
+  );
+  const valBySym = new Map<string, number>();
+  for (const br of boards) {
+    for (const [s, t] of Object.entries(br.board)) {
+      if (t.volume > 0) valBySym.set(s, t.value_bil || (t.last * t.volume) / 1e6);
+    }
+  }
+  const ranked = syms
+    .filter((s) => (valBySym.get(s) ?? 0) > 0)
+    .sort((a, b) => (valBySym.get(b) ?? 0) - (valBySym.get(a) ?? 0))
+    .slice(0, maxCap);
+  return ranked.length ? ranked : syms.slice(0, maxCap);
+}
+
+async function buildStatusPayload() {
+  const catalog = await fetchFullStockCatalog();
+  const parts = vnNowParts();
+  return {
+    connected: true,
+    upstreamSsiConnected: wsMgr.isConnected,
+    hoseCount: catalog.counts.HOSE,
+    hnxCount: catalog.counts.HNX,
+    upcomCount: catalog.counts.UPCOM,
+    totalCount: catalog.counts.total,
+    dataSource: isSsiRestBlocked() ? 'VNDirect' : catalog.source,
+    classificationStandard: catalog.classificationStandard,
+    ssiRestBlocked: isSsiRestBlocked(),
+    vnClock: parts.clock,
+    today: parts.dateStr,
+    lastUpdate: wsMgr.lastUpdate || parts.hms,
+  };
+}
+
 // ==============================================================================
 // API ROUTES
 // ==============================================================================
 
 app.get('/api/status', async (_req, res) => {
   try {
-    const catalog = await fetchFullStockCatalog();
-    const parts = vnNowParts();
-    res.json({
-      connected: wsMgr.isConnected,
-      hoseCount: catalog.counts.HOSE,
-      hnxCount: catalog.counts.HNX,
-      upcomCount: catalog.counts.UPCOM,
-      totalCount: catalog.counts.total,
-      dataSource: isSsiRestBlocked() ? 'VNDirect' : catalog.source,
-      ssiRestBlocked: isSsiRestBlocked(),
-      vnClock: parts.clock,
-      today: parts.dateStr,
-      lastUpdate: wsMgr.lastUpdate || parts.hms,
-    });
+    res.json(await buildStatusPayload());
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Status error' });
   }
@@ -174,6 +203,7 @@ app.get('/api/stocks', async (req, res) => {
       counts: catalog.counts,
       industries: catalog.industries,
       source: catalog.source,
+      classificationStandard: catalog.classificationStandard,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Stocks catalog error' });
@@ -737,9 +767,7 @@ app.get('/api/treemap', async (req, res) => {
       else cntRef++;
 
       const meta = catalog.stocks[sym];
-      const ind = isPennyStock(sym)
-        ? 'Penny'
-        : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || meta?.industry || 'Khác';
+      const ind = meta?.industry || 'Khác';
 
       const valBil =
         baseItem.value_bil && baseItem.value_bil > 0 && !wsTick
@@ -841,9 +869,14 @@ app.post('/api/market-health', async (req, res) => {
       }
     }
 
-    const syms = Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)
-      .filter(([s, ind]) => ind !== 'Chỉ số' && ind !== 'Penny' && !isPennyStock(s))
-      .map(([s]) => s);
+    const catalog = await fetchFullStockCatalog();
+    const industryMap = buildIndustryMapFromCatalog(catalog.stocks);
+    const rawSyms = selectCatalogSymbols(catalog.stocks, {
+      exchange: 'HOSE',
+      industry: 'Tất cả ngành',
+      excludePenny: true,
+    });
+    const syms = await resolveLiquidUniverse(rawSyms, 'HOSE', maDate, 260);
     const secDfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(maDate, -180), maDate, 'D');
 
     const secGroups = new Map<string, { tot: number; a20: number; b50: number; prevSum: number; prevCnt: number }>();
@@ -851,7 +884,7 @@ app.post('/api/market-health', async (req, res) => {
 
     for (const [s, bars] of Object.entries(secDfs)) {
       if (bars.length < 60 + lag) continue;
-      const ind = HARDCODED_HOSE_INDUSTRIES_MAPPING[s] || 'Khác';
+      const ind = industryMap[s] || 'Khác';
       const subC = bars.slice(-100).map((b) => b.close);
       const m20 = rollingMean(subC, 20, 20);
       const m50 = rollingMean(subC, 50, 50);
@@ -916,7 +949,17 @@ app.post('/api/sector-ma', async (req, res) => {
   try {
     const industry = String(req.body?.industry || 'Tất cả ngành');
     const asOfDate = String(req.body?.date || vnTodayStr());
-    const syms = getSymbolsByIndustry(industry, industry === 'Tất cả ngành');
+    const rawEx = String(req.body?.exchange || 'HOSE').toUpperCase().trim();
+    const exchange: 'HOSE' | 'HNX' | 'UPCOM' | 'ALL' =
+      rawEx === 'HNX' || rawEx === 'UPCOM' || rawEx === 'ALL' ? rawEx : 'HOSE';
+    const catalog = await fetchFullStockCatalog();
+    const industryMap = buildIndustryMapFromCatalog(catalog.stocks);
+    const rawSyms = selectCatalogSymbols(catalog.stocks, {
+      exchange,
+      industry,
+      excludePenny: industry === 'Tất cả ngành',
+    });
+    const syms = await resolveLiquidUniverse(rawSyms, exchange, asOfDate, 260);
     const dfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(asOfDate, -450), asOfDate, 'D');
 
     const maStt = (px: number, mv: number | null) => {
@@ -928,7 +971,7 @@ app.post('/api/sector-ma', async (req, res) => {
       const groups = new Map<string, { tot: number; a20: number; b50: number; bestD: number; hl: string }>();
       for (const [s, bars] of Object.entries(dfs)) {
         if (bars.length < 50) continue;
-        const ind = HARDCODED_HOSE_INDUSTRIES_MAPPING[s] || 'Khác';
+        const ind = industryMap[s] || 'Khác';
         const closes = bars.map((b) => b.close);
         const cNow = closes[closes.length - 1];
         const m20 = rollingMean(closes, 20, 20)[closes.length - 1];
@@ -1009,9 +1052,17 @@ app.post('/api/money-flow', async (req, res) => {
   try {
     const mfDate = String(req.body?.date || vnTodayStr());
     const mfDays = Math.max(3, Math.min(60, Number(req.body?.days ?? 10)));
-    const syms = Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)
-      .filter(([, ind]) => ind !== 'Chỉ số')
-      .map(([s]) => s);
+    const rawEx = String(req.body?.exchange || 'HOSE').toUpperCase().trim();
+    const exchange: 'HOSE' | 'HNX' | 'UPCOM' | 'ALL' =
+      rawEx === 'HNX' || rawEx === 'UPCOM' || rawEx === 'ALL' ? rawEx : 'HOSE';
+    const catalog = await fetchFullStockCatalog();
+    const industryMap = buildIndustryMapFromCatalog(catalog.stocks);
+    const rawSyms = selectCatalogSymbols(catalog.stocks, {
+      exchange,
+      industry: 'Tất cả ngành',
+      excludePenny: false,
+    });
+    const syms = await resolveLiquidUniverse(rawSyms, exchange, mfDate, 260);
     const dfs = await fetchBatchOhlcvSsi(
       syms,
       addDaysToDateStr(mfDate, -(mfDays * 2 + 15)),
@@ -1054,7 +1105,7 @@ app.post('/api/money-flow', async (req, res) => {
 
       const cmfR = sumVol > 0 ? cmfMultVol / sumVol : 0;
       const pct = sub[0].close > 0 ? (sub[sub.length - 1].close / sub[0].close - 1) * 100 : 0;
-      const ind = isPennyStock(sym) ? 'Penny' : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || 'Khác';
+      const ind = industryMap[sym] || 'Khác';
 
       const g = perInd.get(ind) || { dp: 0, stp: 0, cmfNum: 0, tv: 0, pcts: [], cnt: 0 };
       g.dp += dpVol;
@@ -1093,7 +1144,15 @@ app.post('/api/radar-eod', async (req, res) => {
     const ftdMode = Number(req.body?.ftdMode ?? 0);
 
     const today = vnTodayStr();
-    const syms = [...getSymbolsByIndustry('Tất cả ngành', true), 'VNINDEX'];
+    const catalog = await fetchFullStockCatalog();
+    const industryMap = buildIndustryMapFromCatalog(catalog.stocks);
+    const rawSyms = selectCatalogSymbols(catalog.stocks, {
+      exchange: 'HOSE',
+      industry: 'Tất cả ngành',
+      excludePenny: true,
+    });
+    const liquidSyms = await resolveLiquidUniverse(rawSyms, 'HOSE', today, 260);
+    const syms = [...liquidSyms, 'VNINDEX'];
     const dfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(today, -350), today, 'D');
 
     const vni = dfs['VNINDEX'];
@@ -1160,8 +1219,10 @@ app.post('/api/radar-eod', async (req, res) => {
     }
 
     const secMap = new Map<string, string[]>();
-    for (const [sym, sec] of Object.entries(HARDCODED_HOSE_INDUSTRIES_MAPPING)) {
-      if (!['Chỉ số', 'Penny', 'Khác'].includes(sec) && !isPennyStock(sym) && dfs[sym]) {
+    for (const sym of liquidSyms) {
+      const meta = catalog.stocks[sym];
+      const sec = meta?.industry || 'Khác';
+      if (!['Chỉ số', 'Penny', 'Khác'].includes(sec) && !meta?.isPenny && dfs[sym]) {
         const list = secMap.get(sec) || [];
         list.push(sym);
         secMap.set(sec, list);
@@ -1206,7 +1267,7 @@ app.post('/api/radar-eod', async (req, res) => {
         const sig = full && brk ? 'ĐẠT (Full)' : full ? 'Chờ Vol' : brk ? 'Nổ Vol (Hồi)' : 'Tích lũy';
         stocksRaw.push({
           symbol: sym,
-          industry: HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || 'Khác',
+          industry: industryMap[sym] || 'Khác',
           price: Number(c.toFixed(2)),
           volume: Math.round(v),
           volRatio: Number(vSc.toFixed(2)),
@@ -1233,9 +1294,16 @@ app.post('/api/minervini', async (req, res) => {
     const endDate = String(req.body?.endDate || today);
     const minRs = Number(req.body?.minRs ?? 70);
 
-    const syms = getSymbolsByIndustry('Tất cả ngành', true);
+    const catalog = await fetchFullStockCatalog();
+    const industryMap = buildIndustryMapFromCatalog(catalog.stocks);
+    const rawSyms = selectCatalogSymbols(catalog.stocks, {
+      exchange: 'HOSE',
+      industry: 'Tất cả ngành',
+      excludePenny: true,
+    });
+    const syms = await resolveLiquidUniverse(rawSyms, 'HOSE', endDate, 260);
     const rawMap = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(startDate, -450), endDate, 'D');
-    const result = runMinerviniScreener(rawMap, startDate, endDate, minRs);
+    const result = runMinerviniScreener(rawMap, startDate, endDate, minRs, industryMap);
 
     res.json(result);
   } catch (err: any) {
@@ -1243,7 +1311,7 @@ app.post('/api/minervini', async (req, res) => {
   }
 });
 
-// 3.3 TOP GAINERS (Supports HOSE, HNX, UPCOM + full industry catalog)
+// 3.3 TOP GAINERS (Supports HOSE, HNX, UPCOM + unified SSI ICB catalog)
 app.post('/api/gainers', async (req, res) => {
   try {
     const today = vnTodayStr();
@@ -1255,40 +1323,15 @@ app.post('/api/gainers', async (req, res) => {
       rawEx === 'HNX' || rawEx === 'UPCOM' || rawEx === 'ALL' ? rawEx : 'HOSE';
 
     const catalog = await fetchFullStockCatalog();
-    let syms: string[] = [];
-
-    if (industry === 'Chỉ số') {
-      syms = [...ALL_MAIN_INDICES];
-    } else if (industry === 'Penny') {
-      syms = getSymbolsByIndustry('Penny', false);
-    } else {
-      const candidates = catalog.list.filter((item) => {
-        if (item.exchange === 'INDEX') return false;
-        if (exchange !== 'ALL' && item.exchange !== exchange) return false;
-        if (industry !== 'Tất cả ngành' && item.industry !== industry) return false;
-        return true;
-      });
-      syms = candidates.map((c) => c.symbol);
-
-      // For very large universes (e.g. UPCOM ~800 or ALL ~1500), rank by active trading value first to keep scans fast
-      if (syms.length > 260) {
-        const boardsToFetch: ('HOSE' | 'HNX' | 'UPCOM')[] =
-          exchange === 'ALL' ? ['HOSE', 'HNX', 'UPCOM'] : [exchange];
-        const boards = await Promise.all(
-          boardsToFetch.map((ex) => fetchExchangeBoardWithFallback(ex, endDate, false))
-        );
-        const valBySym = new Map<string, number>();
-        for (const br of boards) {
-          for (const [s, t] of Object.entries(br.board)) {
-            if (t.volume > 0) valBySym.set(s, t.value_bil || (t.last * t.volume) / 1e6);
-          }
-        }
-        syms = syms
-          .filter((s) => (valBySym.get(s) ?? 0) > 0)
-          .sort((a, b) => (valBySym.get(b) ?? 0) - (valBySym.get(a) ?? 0))
-          .slice(0, 260);
-      }
-    }
+    const rawSyms = selectCatalogSymbols(catalog.stocks, {
+      exchange,
+      industry,
+      excludePenny: false,
+    });
+    const syms =
+      industry === 'Chỉ số'
+        ? rawSyms
+        : await resolveLiquidUniverse(rawSyms, exchange, endDate, 260);
 
     const dfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(startDate, -10), endDate, 'D', 24);
 
@@ -1314,10 +1357,7 @@ app.post('/api/gainers', async (req, res) => {
         rows.push({
           symbol: sym,
           exchange: meta?.exchange || 'HOSE',
-          industry:
-            industry === 'Penny'
-              ? 'Penny'
-              : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || meta?.industry || 'Khác',
+          industry: industry === 'Penny' ? 'Penny' : meta?.industry || 'Khác',
           pctChange: Number((((cl - c0) / c0) * 100).toFixed(2)),
           pctFromLow: Number((((cl - lmin) / lmin) * 100).toFixed(2)),
           pctFromHigh: Number((((cl - hmax) / hmax) * 100).toFixed(2)),
@@ -1676,8 +1716,27 @@ app.post('/api/backtest', async (req, res) => {
     const startDate = String(b.startDate || '2024-10-17');
     const endDate = String(b.endDate || vnTodayStr());
 
-    const targetSyms = getSymbolsByIndustry(industry, industry === 'Tất cả ngành');
-    const allHose = getSymbolsByIndustry('Tất cả ngành', true);
+    const catalog = await fetchFullStockCatalog();
+    const industryMap = buildIndustryMapFromCatalog(catalog.stocks);
+    const pennySet = new Set(
+      Object.values(catalog.stocks)
+        .filter((m) => m.isPenny)
+        .map((m) => m.symbol)
+    );
+    const rawTarget = selectCatalogSymbols(catalog.stocks, {
+      exchange: 'HOSE',
+      industry,
+      excludePenny: industry === 'Tất cả ngành',
+    });
+    const rawHose = selectCatalogSymbols(catalog.stocks, {
+      exchange: 'HOSE',
+      industry: 'Tất cả ngành',
+      excludePenny: true,
+    });
+    const [targetSyms, allHose] = await Promise.all([
+      resolveLiquidUniverse(rawTarget, 'HOSE', endDate, 240),
+      resolveLiquidUniverse(rawHose, 'HOSE', endDate, 240),
+    ]);
     const fetchSyms = [...new Set([...allHose, ...targetSyms, 'VNINDEX'])].sort();
 
     const rawBt = await fetchBatchOhlcvSsi(
@@ -1723,7 +1782,7 @@ app.post('/api/backtest', async (req, res) => {
       panic_bot52_thresh: Number(b.panicBot52Thresh ?? 70.0),
     };
 
-    const result = runHybridBacktest(rawBt, params);
+    const result = runHybridBacktest(rawBt, params, industryMap, pennySet);
     if (!result) {
       return res.json({ empty: true });
     }
@@ -1734,8 +1793,135 @@ app.post('/api/backtest', async (req, res) => {
 });
 
 // ==============================================================================
-// VITE DEV MIDDLEWARE OR PRODUCTION STATIC SERVING
+// REALTIME WEBSOCKET HUB (/ws on port 3000) + VITE / STATIC SERVER
 // ==============================================================================
+function attachRealtimeWebSocketHub(httpServer: http.Server) {
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const clientSubs = new Map<WsClient, Set<string>>();
+
+  const sendSafe = (ws: WsClient, payload: Record<string, any>) => {
+    if (ws.readyState === WsClient.OPEN) {
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch {
+        // ignore closed socket
+      }
+    }
+  };
+
+  // Batch incoming ticks every 250ms to prevent flooding browser tabs
+  let pendingTicks: Record<string, LiveTick> = {};
+  let flushTimer: NodeJS.Timeout | null = null;
+
+  const flushTicks = () => {
+    flushTimer = null;
+    const batch = pendingTicks;
+    pendingTicks = {};
+    const keys = Object.keys(batch);
+    if (!keys.length || wss.clients.size === 0) return;
+    const ts = vnNowParts().hms;
+
+    for (const client of wss.clients) {
+      if (client.readyState !== WsClient.OPEN) continue;
+      const subs = clientSubs.get(client);
+      if (!subs || subs.size === 0) {
+        sendSafe(client, { type: 'ticks', ticks: batch, ts });
+      } else {
+        const filtered: Record<string, LiveTick> = {};
+        let hasAny = false;
+        for (const sym of keys) {
+          if (subs.has('*') || subs.has(sym) || ALL_MAIN_INDICES.includes(sym)) {
+            filtered[sym] = batch[sym];
+            hasAny = true;
+          }
+        }
+        if (hasAny) {
+          sendSafe(client, { type: 'ticks', ticks: filtered, ts });
+        }
+      }
+    }
+  };
+
+  wsMgr.onTicks((ticks) => {
+    Object.assign(pendingTicks, ticks);
+    if (!flushTimer) {
+      flushTimer = setTimeout(flushTicks, 250);
+    }
+  });
+
+  wsMgr.onSync(async (ev) => {
+    if (wss.clients.size === 0) return;
+    const status = await buildStatusPayload().catch(() => null);
+    for (const client of wss.clients) {
+      sendSafe(client, { type: 'sync', ...ev });
+      if (status) sendSafe(client, { type: 'status', status });
+    }
+  });
+
+  // Periodic status/clock push over WS so clients never need status polling
+  setInterval(async () => {
+    if (wss.clients.size === 0) return;
+    const status = await buildStatusPayload().catch(() => null);
+    if (!status) return;
+    for (const client of wss.clients) {
+      sendSafe(client, { type: 'status', status });
+    }
+  }, 15_000);
+
+  wss.on('connection', (ws) => {
+    const subs = new Set<string>([...ALL_MAIN_INDICES]);
+    clientSubs.set(ws, subs);
+
+    // Send initial status + snapshot immediately on connect
+    buildStatusPayload()
+      .then((status) => sendSafe(ws, { type: 'status', status }))
+      .catch(() => {});
+
+    const initTicks = wsMgr.getSnapshot([...ALL_MAIN_INDICES]);
+    if (Object.keys(initTicks).length > 0) {
+      sendSafe(ws, { type: 'ticks', ticks: initTicks, ts: vnNowParts().hms });
+    }
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString('utf8'));
+        if (msg?.type === 'ping') {
+          sendSafe(ws, { type: 'pong', ts: vnNowParts().hms });
+        } else if (msg?.type === 'subscribe' && Array.isArray(msg.symbols)) {
+          const syms = msg.symbols
+            .map((s: unknown) => String(s || '').toUpperCase().trim())
+            .filter(Boolean);
+          const toUpstream: string[] = [];
+          for (const s of syms) {
+            subs.add(s);
+            if (s !== '*') toUpstream.push(s);
+          }
+          if (toUpstream.length) {
+            wsMgr.subscribe(toUpstream);
+            const snap = wsMgr.getSnapshot(toUpstream);
+            if (Object.keys(snap).length > 0) {
+              sendSafe(ws, { type: 'ticks', ticks: snap, ts: vnNowParts().hms });
+            }
+          }
+        } else if (msg?.type === 'unsubscribe' && Array.isArray(msg.symbols)) {
+          for (const s of msg.symbols) {
+            const sym = String(s || '').toUpperCase().trim();
+            if (sym && !ALL_MAIN_INDICES.includes(sym)) subs.delete(sym);
+          }
+        }
+      } catch {
+        // ignore malformed client messages
+      }
+    });
+
+    ws.on('close', () => {
+      clientSubs.delete(ws);
+    });
+  });
+
+  return wss;
+}
+
 async function startServer() {
   const distDir = path.resolve(__dirname, 'dist');
   const isProd = process.env.NODE_ENV !== 'development' && fs.existsSync(distDir);
@@ -1755,8 +1941,11 @@ async function startServer() {
   }
 
   const port = Number(process.env.PORT || 3000);
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`V11 PRO server listening on http://0.0.0.0:${port}`);
+  const httpServer = http.createServer(app);
+  attachRealtimeWebSocketHub(httpServer);
+
+  httpServer.listen(port, '0.0.0.0', () => {
+    console.log(`V11 PRO server + WebSocket hub (/ws) listening on http://0.0.0.0:${port}`);
   });
 }
 

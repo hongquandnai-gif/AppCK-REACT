@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { INDUSTRY_GROUPS } from '../shared/constants';
 import { DynamicOhlcChart } from '../components/DynamicOhlcChart';
 import { PlotlyChart } from '../components/PlotlyChart';
+import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { patchOhlcBarsWithTick, patchStockRowsWithTicks } from '../utils/livePatch';
 import {
   FieldLabel,
   LoadingBar,
@@ -23,19 +25,18 @@ import {
   vnTodayIso,
 } from '../utils/format';
 
-import type { StockCatalogResponse } from '../types/catalog';
-
 interface Props {
-  catalog: StockCatalogResponse | null;
+  isActive?: boolean;
 }
 
-export const BreakoutScreenerWorkspace: React.FC<Props> = ({ catalog }) => {
+export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) => {
+  const { catalog, ticks, tickVersion, liveAuto } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
   const [subTab, setSubTab] = useState<'radar' | 'minervini' | 'gainers'>('radar');
-  const industryOptions = useMemo(
-    () => (catalog?.industries?.length ? catalog.industries : INDUSTRY_GROUPS),
-    [catalog]
-  );
+  const industryOptions = useMemo(() => {
+    const raw = catalog?.industries?.length ? catalog.industries : INDUSTRY_GROUPS;
+    return raw.filter((g) => g !== 'Chỉ số');
+  }, [catalog]);
 
   // --- 3.1 Radar EOD ---
   const [maFast, setMaFast] = useState(20);
@@ -90,8 +91,59 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ catalog }) => {
 
   const activeDiag = useMemo(() => {
     if (!minRes?.diagnostics || !diagSym) return null;
-    return minRes.diagnostics[diagSym] || null;
-  }, [minRes, diagSym]);
+    const base = minRes.diagnostics[diagSym];
+    if (!base) return null;
+    const tick = liveAuto ? ticks[base.symbol] : undefined;
+    if (!tick || !base.chartBars?.length) return base;
+    const patchedBars = patchOhlcBarsWithTick(base.chartBars, tick, false);
+    if (patchedBars === base.chartBars) return base;
+    return {
+      ...base,
+      close: tick.last,
+      chartBars: patchedBars,
+    };
+  }, [minRes, diagSym, liveAuto, ticks]);
+
+  // Subscribe currently displayed screener symbols for smooth real-time WS price patching
+  const activeScreenerSymbols = useMemo(() => {
+    if (subTab === 'radar' && radarRes?.stocks?.length) {
+      return radarRes.stocks.map((s: any) => String(s.symbol || '')).filter(Boolean);
+    }
+    if (subTab === 'minervini') {
+      const syms: string[] = [];
+      if (minRes?.screened?.length) {
+        for (const s of minRes.screened) syms.push(String(s.symbol || ''));
+      }
+      if (diagSym) syms.push(diagSym);
+      return syms.filter(Boolean);
+    }
+    return [];
+  }, [subTab, radarRes, minRes, diagSym]);
+
+  useSubscribeSymbols(
+    activeScreenerSymbols,
+    isActive && liveAuto && activeScreenerSymbols.length > 0
+  );
+
+  // Patch Radar EOD stock prices & volumes in-place without resetting table or scroll
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'radar') return;
+    setRadarRes((prev: any) => {
+      if (!prev?.stocks?.length) return prev;
+      const nextStocks = patchStockRowsWithTicks(prev.stocks, ticks);
+      return nextStocks === prev.stocks ? prev : { ...prev, stocks: nextStocks };
+    });
+  }, [tickVersion, ticks, liveAuto, isActive, subTab]);
+
+  // Patch Minervini screened stock prices in-place
+  useEffect(() => {
+    if (!liveAuto || !isActive || subTab !== 'minervini') return;
+    setMinRes((prev: any) => {
+      if (!prev?.screened?.length) return prev;
+      const nextScreened = patchStockRowsWithTicks(prev.screened, ticks);
+      return nextScreened === prev.screened ? prev : { ...prev, screened: nextScreened };
+    });
+  }, [tickVersion, ticks, liveAuto, isActive, subTab]);
 
   const breadthPlot = useMemo(() => {
     const br: any[] = minRes?.breadth || [];
@@ -169,11 +221,17 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ catalog }) => {
   const [gExchange, setGExchange] = useState<'HOSE' | 'HNX' | 'UPCOM' | 'ALL'>('HOSE');
   const [gStart, setGStart] = useState(() => addDaysIso(today, -30));
   const [gEnd, setGEnd] = useState(today);
-  const [gInd, setGInd] = useState(INDUSTRY_GROUPS[0]);
+  const [gInd, setGInd] = useState('Tất cả ngành');
   const [gTop, setGTop] = useState(10);
   const [gRank, setGRank] = useState<'combo' | 'change' | 'low'>('combo');
   const [gainersRaw, setGainersRaw] = useState<any[]>([]);
   const [gainersLoading, setGainersLoading] = useState(false);
+
+  useEffect(() => {
+    if (industryOptions.length && !industryOptions.includes(gInd)) {
+      setGInd(industryOptions[0]);
+    }
+  }, [industryOptions, gInd]);
 
   const runGainers = async () => {
     setGainersLoading(true);
