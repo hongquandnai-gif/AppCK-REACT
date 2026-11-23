@@ -267,7 +267,11 @@ export const MarketStreamProvider: React.FC<{ children: React.ReactNode }> = ({ 
                 prev.volume !== tick.volume ||
                 prev.value_bil !== tick.value_bil ||
                 prev.pct !== tick.pct ||
-                prev.liveSource !== tick.liveSource
+                prev.liveSource !== tick.liveSource ||
+                prev.fBuyVol !== tick.fBuyVol ||
+                prev.fSellVol !== tick.fSellVol ||
+                prev.fBuyValBil !== tick.fBuyValBil ||
+                prev.fSellValBil !== tick.fSellValBil
               ) {
                 ticksRef.current[sym] = tick;
                 changed = true;

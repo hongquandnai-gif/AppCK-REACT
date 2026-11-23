@@ -11,6 +11,11 @@ export interface ParsedSsiPipeTick {
   volume: number;
   lastVol?: number;
   value_bil?: number;
+  fBuyVol?: number;
+  fBuyValBil?: number;
+  fSellVol?: number;
+  fSellValBil?: number;
+  fCurrentRoom?: number;
 }
 
 function parseSsiPrice(raw: string | undefined): number | null {
@@ -36,9 +41,21 @@ function parseSsiExchange(raw: string | undefined): 'HOSE' | 'HNX' | 'UPCOM' | u
   return undefined;
 }
 
+function parseNonNegInt(raw: string | undefined): number | undefined {
+  if (!raw || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
+function parseNonNegBil(raw: string | undefined): number | undefined {
+  if (!raw || raw === '') return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Number((n / 1e9).toFixed(4)) : undefined;
+}
+
 /**
  * Parses a live pipe-delimited frame from SSI `stockRealtimeByListV2`.
- * Format: `MAIN|S#<SYM>|bid1..bid10(20)|ask1..ask10(20)|matchedPrice(42)|matchedVol(43)|highest(44)|exchange(45)|lowest(46)|avg(47)|...|change(52)|pctChange(53)|nmTotalQty(54)|nmTotalVal(55)|...|ceil(59)|floor(60)|ref(61)|...|open(75)|...`
+ * Format: `MAIN|S#<SYM>|bid1..bid10(20)|ask1..ask10(20)|matchedPrice(42)|matchedVol(43)|highest(44)|exchange(45)|lowest(46)|avg(47)|fBuyVol(48)|fBuyVal(49)|fSellVol(50)|fSellVal(51)|change(52)|pctChange(53)|nmTotalQty(54)|nmTotalVal(55)|...|ceil(59)|floor(60)|ref(61)|...|curRoom(65)|...|open(75)|...`
  *
  * Ignores non-MAIN frames (such as `ODD_LOT|...`) and frames without a valid matched price.
  */
@@ -85,6 +102,12 @@ export function parseSsiPipeTick(message: string): ParsedSsiPipeTick | null {
       ? Number(((last * volume) / 1e6).toFixed(3))
       : undefined;
 
+  const fBuyVol = parseNonNegInt(parts[48]);
+  const fBuyValBil = parseNonNegBil(parts[49]);
+  const fSellVol = parseNonNegInt(parts[50]);
+  const fSellValBil = parseNonNegBil(parts[51]);
+  const fCurrentRoom = parseNonNegInt(parts[65]);
+
   return {
     symbol: sym,
     exchange,
@@ -98,5 +121,10 @@ export function parseSsiPipeTick(message: string): ParsedSsiPipeTick | null {
     volume,
     lastVol,
     value_bil,
+    fBuyVol,
+    fBuyValBil,
+    fSellVol,
+    fSellValBil,
+    fCurrentRoom,
   };
 }

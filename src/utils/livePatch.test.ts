@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  patchForeignTradingWithTicks,
   patchIndicesWithTicks,
   patchOhlcBarsWithTick,
   patchPortfolioWithTicks,
@@ -289,4 +290,64 @@ test('patchStockRowsWithTicks updates generic screener rows in-place', () => {
   assert.equal(patched[0].price, 28.0);
   assert.equal(patched[0].changePct, 2.94);
   assert.equal(patched[0].volume, 15_000_000);
+});
+
+test('patchForeignTradingWithTicks updates live foreign buy/sell, sectors, and topBuy/topSell', () => {
+  const foreignResp = {
+    source: 'VNDirect',
+    isLiveWs: false,
+    syncTime: '14:00:00',
+    summary: { buyStocksCount: 0, sellStocksCount: 1, activeStocksCount: 1 },
+    sectors: [{ industry: 'Công nghệ Thông tin', buyValBil: 50, sellValBil: 80, netValBil: -30, buyVol: 1_000_000, sellVol: 1_600_000, netVol: -600_000, stockCount: 1, topSymbol: 'FPT' }],
+    topBuy: [],
+    topSell: [{ symbol: 'FPT', netValBil: -30 }],
+    stocks: [
+      {
+        symbol: 'FPT',
+        companyName: 'FPT Corp',
+        exchange: 'HOSE',
+        industry: 'Công nghệ Thông tin',
+        price: 45.5,
+        pct: 1.1,
+        buyValBil: 50,
+        sellValBil: 80,
+        netValBil: -30,
+        buyVol: 1_000_000,
+        sellVol: 1_600_000,
+        netVol: -600_000,
+        totalRoom: 900_000_000,
+        currentRoom: 450_000_000,
+        roomPct: 50,
+      },
+    ],
+  };
+
+  const next = patchForeignTradingWithTicks(foreignResp, {
+    FPT: {
+      symbol: 'FPT',
+      last: 46.0,
+      ref: 45.0,
+      delta: 1.0,
+      pct: 2.22,
+      volume: 8_000_000,
+      time: '14:15:05',
+      liveSource: 'SSI_WS',
+      fBuyVol: 2_500_000,
+      fBuyValBil: 115.0,
+      fSellVol: 1_600_000,
+      fSellValBil: 80.0,
+      fCurrentRoom: 449_000_000,
+    },
+  });
+
+  assert.equal(next.isLiveWs, true);
+  assert.equal(next.source, 'VNDirect + SSI WS');
+  assert.equal(next.syncTime, '14:15:05');
+  assert.equal(next.stocks[0].netValBil, 35);
+  assert.equal(next.stocks[0].netVol, 900_000);
+  assert.equal(next.topBuy.length, 1);
+  assert.equal(next.topBuy[0].symbol, 'FPT');
+  assert.equal(next.topSell.length, 0);
+  assert.equal(next.sectors[0].netValBil, 35);
+  assert.equal(next.summary.buyStocksCount, 1);
 });

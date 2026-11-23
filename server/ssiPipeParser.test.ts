@@ -29,6 +29,11 @@ test('parseSsiPipeTick parses HOSE MAIN frames with exact OHLC, volume, and valu
   assert.equal(tick.volume, 6333700);
   assert.equal(tick.lastVol, 200);
   assert.equal(tick.value_bil, 284.13);
+  assert.equal(tick.fBuyVol, 1245675);
+  assert.equal(tick.fBuyValBil, 55.3922);
+  assert.equal(tick.fSellVol, 1762730);
+  assert.equal(tick.fSellValBil, 78.8199);
+  assert.equal(tick.fCurrentRoom, 451813390);
 });
 
 test('parseSsiPipeTick ignores ODD_LOT frames so odd-lot volume never corrupts main board', () => {
@@ -43,6 +48,11 @@ test('parseSsiPipeTick parses HNX and UPCOM MAIN frames accurately', () => {
   assert.equal(ceo.last, 11.5);
   assert.equal(ceo.volume, 1322000);
   assert.equal(ceo.value_bil, 15.061);
+  assert.equal(ceo.fBuyVol, 23500);
+  assert.equal(ceo.fBuyValBil, 0.2667);
+  assert.equal(ceo.fSellVol, 800);
+  assert.equal(ceo.fSellValBil, 0.0092);
+  assert.equal(ceo.fCurrentRoom, 514681739);
 
   const vea = parseSsiPipeTick(SAMPLE_UPCOM_VEA);
   assert.ok(vea);

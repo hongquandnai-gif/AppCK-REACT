@@ -3,6 +3,7 @@ import { ALL_MAIN_INDICES, getVnTreemapColor } from '../shared/constants';
 import { PlotlyChart } from '../components/PlotlyChart';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
 import { patchIndicesWithTicks, patchTreemapWithTicks } from '../utils/livePatch';
+import { ForeignTradingPanel } from './ForeignTradingPanel';
 import {
   FieldLabel,
   LoadingBar,
@@ -102,7 +103,7 @@ const LIQUIDITY_SYMBOLS: Array<{ id: string; label: string }> = [
 export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) => {
   const { liveAuto, ticks, tickVersion, syncVersion } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
-  const [subTab, setSubTab] = useState<'indices' | 'liquidity' | 'treemap' | 'health'>('indices');
+  const [subTab, setSubTab] = useState<'indices' | 'liquidity' | 'treemap' | 'foreign' | 'health'>('indices');
 
   // --- Sub-tab 1.1: Indices Live ---
   const [idxDate, setIdxDate] = useState(today);
@@ -645,6 +646,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
           { id: 'indices', label: '⏱️ Chỉ Số Trực Tiếp (SSI Realtime)' },
           { id: 'liquidity', label: '📊 Thanh Khoản Trong Ngày' },
           { id: 'treemap', label: '🗺️ Bản Đồ Nhiệt (Treemap)' },
+          { id: 'foreign', label: '🌍 Giao Dịch Nước Ngoài' },
           { id: 'health', label: '🩺 Sức Khỏe & Ngày Phân Phối' },
         ]}
       />
@@ -1250,6 +1252,10 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
             )
           )}
         </div>
+      )}
+
+      {subTab === 'foreign' && (
+        <ForeignTradingPanel isActive={isActive && subTab === 'foreign'} />
       )}
 
       {subTab === 'health' && (

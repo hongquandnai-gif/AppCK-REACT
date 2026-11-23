@@ -14,6 +14,11 @@ export interface LiveTickDto {
   tradeDate?: string;
   exchange?: 'HOSE' | 'HNX' | 'UPCOM';
   liveSource?: 'SSI_WS' | 'BOARD';
+  fBuyVol?: number;
+  fBuyValBil?: number;
+  fSellVol?: number;
+  fSellValBil?: number;
+  fCurrentRoom?: number;
 }
 
 export interface PatchOhlcOptions {
@@ -634,4 +639,173 @@ export function patchSectorMaWithTicks(
   }
 
   return secMaRes;
+}
+
+/**
+ * Patches Foreign Trading (Giao dịch khối ngoại) stocks, topBuy/topSell, and SSI ICB sectors
+ * in-place from live SSI WebSocket ticks without flickering or resetting chart zoom.
+ */
+export function patchForeignTradingWithTicks(
+  foreignResp: any,
+  ticks: Record<string, LiveTickDto>
+): any {
+  if (!foreignResp || !Array.isArray(foreignResp.stocks) || !foreignResp.stocks.length) {
+    return foreignResp;
+  }
+
+  let changed = false;
+  let foreignFlowChanged = false;
+  let hasSsiWs = false;
+  let latestTime = foreignResp.syncTime;
+
+  const nextStocks = foreignResp.stocks.map((row: any) => {
+    const tick = ticks[row.symbol];
+    if (!tick || !Number.isFinite(tick.last) || tick.last <= 0) return row;
+    if (tick.liveSource === 'SSI_WS') hasSsiWs = true;
+
+    const nextPrice = Number(tick.last.toFixed(2));
+    const nextPct = Number(tick.pct.toFixed(2));
+
+    let nextBuyVol = row.buyVol;
+    let nextSellVol = row.sellVol;
+    let nextBuyValBil = row.buyValBil;
+    let nextSellValBil = row.sellValBil;
+    let nextCurrentRoom = row.currentRoom;
+    let nextRoomPct = row.roomPct;
+
+    if (tick.fCurrentRoom !== undefined && tick.fCurrentRoom >= 0) {
+      nextCurrentRoom = tick.fCurrentRoom;
+      if (row.totalRoom > 0) {
+        nextRoomPct = Number(((nextCurrentRoom / row.totalRoom) * 100).toFixed(1));
+      }
+    }
+
+    const wsBuyVol = tick.fBuyVol ?? 0;
+    const wsSellVol = tick.fSellVol ?? 0;
+    const wsBuyValBil = tick.fBuyValBil ?? 0;
+    const wsSellValBil = tick.fSellValBil ?? 0;
+
+    if (wsBuyVol > nextBuyVol || wsSellVol > nextSellVol) {
+      nextBuyVol = Math.max(nextBuyVol, wsBuyVol);
+      nextSellVol = Math.max(nextSellVol, wsSellVol);
+      nextBuyValBil = Number(Math.max(nextBuyValBil, wsBuyValBil).toFixed(2));
+      nextSellValBil = Number(Math.max(nextSellValBil, wsSellValBil).toFixed(2));
+    }
+
+    const nextNetVol = nextBuyVol - nextSellVol;
+    const nextNetValBil = Number((nextBuyValBil - nextSellValBil).toFixed(2));
+
+    const flowDiff =
+      nextBuyVol !== row.buyVol ||
+      nextSellVol !== row.sellVol ||
+      Math.abs(nextBuyValBil - row.buyValBil) >= 1e-6 ||
+      Math.abs(nextSellValBil - row.sellValBil) >= 1e-6;
+    const pxDiff =
+      Math.abs(row.price - nextPrice) >= 1e-6 ||
+      Math.abs(row.pct - nextPct) >= 1e-6 ||
+      nextCurrentRoom !== row.currentRoom;
+
+    if (!flowDiff && !pxDiff) return row;
+    changed = true;
+    if (flowDiff) foreignFlowChanged = true;
+    if (tick.time) latestTime = tick.time;
+
+    return {
+      ...row,
+      price: nextPrice,
+      pct: nextPct,
+      buyVol: nextBuyVol,
+      sellVol: nextSellVol,
+      netVol: nextNetVol,
+      buyValBil: nextBuyValBil,
+      sellValBil: nextSellValBil,
+      netValBil: nextNetValBil,
+      currentRoom: nextCurrentRoom,
+      roomPct: nextRoomPct,
+    };
+  });
+
+  if (!changed) return foreignResp;
+
+  let nextTopBuy = foreignResp.topBuy;
+  let nextTopSell = foreignResp.topSell;
+  let nextSectors = foreignResp.sectors;
+  let nextSummary = foreignResp.summary;
+
+  if (foreignFlowChanged) {
+    nextTopBuy = nextStocks
+      .filter((s: any) => s.netValBil > 0)
+      .sort((a: any, b: any) => b.netValBil - a.netValBil)
+      .slice(0, 10);
+    nextTopSell = nextStocks
+      .filter((s: any) => s.netValBil < 0)
+      .sort((a: any, b: any) => a.netValBil - b.netValBil)
+      .slice(0, 10);
+
+    const sectorAgg = new Map<string, any>();
+    for (const s of nextStocks) {
+      const g = sectorAgg.get(s.industry) || {
+        industry: s.industry,
+        buyValBil: 0,
+        sellValBil: 0,
+        netValBil: 0,
+        buyVol: 0,
+        sellVol: 0,
+        netVol: 0,
+        stockCount: 0,
+        topSymbol: s.symbol,
+        topAbsNet: -1,
+      };
+      g.buyValBil += s.buyValBil;
+      g.sellValBil += s.sellValBil;
+      g.netValBil += s.netValBil;
+      g.buyVol += s.buyVol;
+      g.sellVol += s.sellVol;
+      g.netVol += s.netVol;
+      g.stockCount += 1;
+      if (Math.abs(s.netValBil) > g.topAbsNet) {
+        g.topAbsNet = Math.abs(s.netValBil);
+        g.topSymbol = s.symbol;
+      }
+      sectorAgg.set(s.industry, g);
+    }
+
+    nextSectors = [...sectorAgg.values()]
+      .map((g) => ({
+        industry: g.industry,
+        buyValBil: Number(g.buyValBil.toFixed(2)),
+        sellValBil: Number(g.sellValBil.toFixed(2)),
+        netValBil: Number(g.netValBil.toFixed(2)),
+        buyVol: g.buyVol,
+        sellVol: g.sellVol,
+        netVol: g.netVol,
+        stockCount: g.stockCount,
+        topSymbol: g.topSymbol,
+      }))
+      .sort((a, b) => b.netValBil - a.netValBil);
+
+    if (foreignResp.summary) {
+      nextSummary = {
+        ...foreignResp.summary,
+        buyStocksCount: nextStocks.filter((s: any) => s.netValBil > 0).length,
+        sellStocksCount: nextStocks.filter((s: any) => s.netValBil < 0).length,
+        activeStocksCount: nextStocks.length,
+      };
+    }
+  }
+
+  return {
+    ...foreignResp,
+    isLiveWs: hasSsiWs || foreignResp.isLiveWs,
+    source:
+      hasSsiWs && foreignResp.source && !String(foreignResp.source).includes('SSI WS')
+        ? `${foreignResp.source} + SSI WS`
+        : foreignResp.source,
+    syncTime: latestTime,
+    summary: nextSummary,
+    sectors: nextSectors,
+    topBuy: nextTopBuy,
+    topSell: nextTopSell,
+    stocks: nextStocks,
+  };
 }

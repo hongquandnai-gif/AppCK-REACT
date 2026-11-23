@@ -53,6 +53,11 @@ export interface LiveTick {
   tradeDate?: string;
   exchange?: 'HOSE' | 'HNX' | 'UPCOM';
   liveSource?: 'SSI_WS' | 'BOARD';
+  fBuyVol?: number;
+  fBuyValBil?: number;
+  fSellVol?: number;
+  fSellValBil?: number;
+  fCurrentRoom?: number;
 }
 
 export type StockMeta = ClassifiedStockMeta;
@@ -99,6 +104,20 @@ export interface IndexSessionStat {
   noChange: number;
   ceilingStocks: number;
   floorStocks: number;
+}
+
+export interface ForeignRecord {
+  code: string;
+  floor: 'HOSE' | 'HNX' | 'UPCOM';
+  tradingDate: string;
+  buyValBil: number;
+  sellValBil: number;
+  netValBil: number;
+  buyVol: number;
+  sellVol: number;
+  netVol: number;
+  totalRoom: number;
+  currentRoom: number;
 }
 
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
@@ -820,6 +839,126 @@ export async function fetchIndexMarketStats(
 }
 
 // ==============================================================================
+// 2.6 FOREIGN TRADING DATA (VNDIRECT FINFO + LIVE SSI WS OVERLAY)
+// ==============================================================================
+const foreignIdxCache = new Map<string, { ts: number; data: ForeignRecord[] }>();
+const foreignStocksCache = new Map<string, { ts: number; data: ForeignRecord[] }>();
+const FOREIGN_CACHE_TTL = 45_000;
+
+function parseForeignRecord(item: any): ForeignRecord | null {
+  const code = String(item?.code || '').trim().toUpperCase();
+  const tradingDate = String(item?.tradingDate || '').trim();
+  if (!code || !tradingDate) return null;
+  const rawFloor = String(item?.floor || '').trim().toUpperCase();
+  const floor: 'HOSE' | 'HNX' | 'UPCOM' =
+    rawFloor === 'HNX' ? 'HNX' : rawFloor === 'UPCOM' ? 'UPCOM' : 'HOSE';
+
+  const buyValVnd = Number(item?.buyVal ?? 0);
+  const sellValVnd = Number(item?.sellVal ?? 0);
+  const netValVnd = Number(item?.netVal ?? buyValVnd - sellValVnd);
+  const buyVol = Math.round(Number(item?.buyVol ?? 0) || 0);
+  const sellVol = Math.round(Number(item?.sellVol ?? 0) || 0);
+  const netVol = Math.round(Number(item?.netVol ?? buyVol - sellVol) || 0);
+  const totalRoom = Math.round(Number(item?.totalRoom ?? 0) || 0);
+  const currentRoom = Math.round(Number(item?.currentRoom ?? 0) || 0);
+
+  return {
+    code,
+    floor,
+    tradingDate,
+    buyValBil: Number(((Number.isFinite(buyValVnd) ? buyValVnd : 0) / 1e9).toFixed(4)),
+    sellValBil: Number(((Number.isFinite(sellValVnd) ? sellValVnd : 0) / 1e9).toFixed(4)),
+    netValBil: Number(((Number.isFinite(netValVnd) ? netValVnd : 0) / 1e9).toFixed(4)),
+    buyVol,
+    sellVol,
+    netVol,
+    totalRoom,
+    currentRoom,
+  };
+}
+
+export async function fetchForeignIndexHistory(
+  targetDate: string,
+  maxSessions = 30,
+  forceRefresh = false
+): Promise<ForeignRecord[]> {
+  const now = Date.now();
+  const safeSessions = Math.max(5, Math.min(60, maxSessions));
+  const key = `${targetDate}|${safeSessions}`;
+  if (!forceRefresh) {
+    const cached = foreignIdxCache.get(key);
+    if (cached && now - cached.ts < FOREIGN_CACHE_TTL) {
+      return cached.data;
+    }
+  }
+
+  const size = safeSessions * 3 + 15;
+  const url = `https://api-finfo.vndirect.com.vn/v4/foreigns?sort=tradingDate:desc&size=${size}&q=code:VNINDEX,HNX,UPCOM~tradingDate:lte:${encodeURIComponent(
+    targetDate
+  )}`;
+  const payload = await fetchVndirectJson(url, 12000);
+  const items: any[] = Array.isArray(payload?.data) ? payload.data : [];
+
+  const seen = new Set<string>();
+  const rows: ForeignRecord[] = [];
+  for (const item of items) {
+    const rec = parseForeignRecord(item);
+    if (!rec) continue;
+    const dk = `${rec.code}|${rec.tradingDate}`;
+    if (seen.has(dk)) continue;
+    seen.add(dk);
+    rows.push(rec);
+  }
+
+  if (rows.length > 0) {
+    if (foreignIdxCache.size > 20) {
+      const firstKey = foreignIdxCache.keys().next().value;
+      if (firstKey) foreignIdxCache.delete(firstKey);
+    }
+    foreignIdxCache.set(key, { ts: now, data: rows });
+  }
+  return rows;
+}
+
+export async function fetchForeignStocksByDate(
+  tradingDate: string,
+  forceRefresh = false
+): Promise<ForeignRecord[]> {
+  const now = Date.now();
+  if (!forceRefresh) {
+    const cached = foreignStocksCache.get(tradingDate);
+    if (cached && now - cached.ts < FOREIGN_CACHE_TTL) {
+      return cached.data;
+    }
+  }
+
+  const url = `https://api-finfo.vndirect.com.vn/v4/foreigns?sort=netVal:desc&size=2200&q=type:STOCK~floor:HOSE,HNX,UPCOM~tradingDate:${encodeURIComponent(
+    tradingDate
+  )}`;
+  const payload = await fetchVndirectJson(url, 14000);
+  const items: any[] = Array.isArray(payload?.data) ? payload.data : [];
+
+  const seen = new Set<string>();
+  const rows: ForeignRecord[] = [];
+  for (const item of items) {
+    const rec = parseForeignRecord(item);
+    if (!rec) continue;
+    if (seen.has(rec.code)) continue;
+    seen.add(rec.code);
+    rows.push(rec);
+  }
+
+  if (rows.length > 0) {
+    if (foreignStocksCache.size > 20) {
+      const firstKey = foreignStocksCache.keys().next().value;
+      if (firstKey) foreignStocksCache.delete(firstKey);
+    }
+    foreignStocksCache.set(tradingDate, { ts: now, data: rows });
+  }
+  return rows;
+}
+
+// ==============================================================================
 // 3. OHLCV FETCHING (SSI PRIMARY -> UNIVERSAL VNDIRECT FALLBACK)
 // ==============================================================================
 function median(vals: number[]): number {
@@ -1019,6 +1158,8 @@ export function clearAllCaches() {
   singleCache.clear();
   eodBoardCache.clear();
   indexStatsCache.clear();
+  foreignIdxCache.clear();
+  foreignStocksCache.clear();
 }
 
 export async function fetchBatchOhlcvSsi(
@@ -1317,6 +1458,11 @@ export class SSIWebSocketManager {
     volume: number;
     lastVol?: number;
     value_bil?: number;
+    fBuyVol?: number;
+    fBuyValBil?: number;
+    fSellVol?: number;
+    fSellValBil?: number;
+    fCurrentRoom?: number;
   }) {
     const sym = parsed.symbol;
     const parts = vnNowParts();
@@ -1354,6 +1500,11 @@ export class SSIWebSocketManager {
       volume: parsed.volume > 0 ? parsed.volume : prevWs?.volume ?? 0,
       lastVol: parsed.lastVol,
       value_bil: parsed.value_bil ?? prevWs?.value_bil,
+      fBuyVol: parsed.fBuyVol ?? prevWs?.fBuyVol,
+      fBuyValBil: parsed.fBuyValBil ?? prevWs?.fBuyValBil,
+      fSellVol: parsed.fSellVol ?? prevWs?.fSellVol,
+      fSellValBil: parsed.fSellValBil ?? prevWs?.fSellValBil,
+      fCurrentRoom: parsed.fCurrentRoom ?? prevWs?.fCurrentRoom,
       time: parts.hms,
       tradeDate: parts.dateStr,
       liveSource: 'SSI_WS',
@@ -1370,13 +1521,17 @@ export class SSIWebSocketManager {
       this.ssiWsTicks.set(tSym, mirroredTick);
       this.liveTicks.set(tSym, mirroredTick);
 
-      // Only broadcast when price, volume, pct, or value actually changed (order-book-only updates skipped)
+      // Only broadcast when price, volume, pct, value, or foreign flow actually changed
       if (
         !prevAny ||
         prevAny.last !== mirroredTick.last ||
         prevAny.volume !== mirroredTick.volume ||
         prevAny.pct !== mirroredTick.pct ||
-        prevAny.value_bil !== mirroredTick.value_bil
+        prevAny.value_bil !== mirroredTick.value_bil ||
+        prevAny.fBuyVol !== mirroredTick.fBuyVol ||
+        prevAny.fSellVol !== mirroredTick.fSellVol ||
+        prevAny.fBuyValBil !== mirroredTick.fBuyValBil ||
+        prevAny.fSellValBil !== mirroredTick.fSellValBil
       ) {
         emitted[tSym] = mirroredTick;
       }
@@ -1393,6 +1548,11 @@ export class SSIWebSocketManager {
           pct: tick.pct,
           volume: tick.volume > 0 ? tick.volume : existingBoard.volume,
           value_bil: tick.value_bil ?? existingBoard.value_bil,
+          fBuyVol: tick.fBuyVol ?? existingBoard.fBuyVol,
+          fBuyValBil: tick.fBuyValBil ?? existingBoard.fBuyValBil,
+          fSellVol: tick.fSellVol ?? existingBoard.fSellVol,
+          fSellValBil: tick.fSellValBil ?? existingBoard.fSellValBil,
+          fCurrentRoom: tick.fCurrentRoom ?? existingBoard.fCurrentRoom,
           time: tick.time,
           tradeDate: tick.tradeDate,
           liveSource: 'SSI_WS',

@@ -11,6 +11,8 @@ import {
   clearAllCaches,
   fetchBatchOhlcvSsi,
   fetchExchangeBoardWithFallback,
+  fetchForeignIndexHistory,
+  fetchForeignStocksByDate,
   fetchFullStockCatalog,
   fetchIndexMarketStats,
   fetchSsiOhlcvWithMetaCached,
@@ -20,6 +22,7 @@ import {
   selectCatalogSymbols,
   vnNowParts,
   vnTodayStr,
+  type ForeignRecord,
   type IndexSessionStat,
   type LiveTick,
   type OhlcvBar,
@@ -870,6 +873,397 @@ app.get('/api/treemap', async (req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Treemap error' });
+  }
+});
+
+// 1.2B FOREIGN TRADING (KHỐI NGOẠI - HOSE / HNX / UPCOM / ALL + SSI WS LIVE OVERLAY)
+app.get('/api/foreign-trading', async (req, res) => {
+  try {
+    const today = vnTodayStr();
+    const requestedDate = String(req.query.date || today);
+    const rawEx = String(req.query.exchange || 'HOSE').toUpperCase().trim();
+    const exchange: 'ALL' | 'HOSE' | 'HNX' | 'UPCOM' =
+      rawEx === 'ALL' || rawEx === 'HNX' || rawEx === 'UPCOM' ? rawEx : 'HOSE';
+    const sessions = Math.max(5, Math.min(40, Number(req.query.sessions || 20) || 20));
+    const refresh = req.query.refresh === '1';
+    if (refresh) clearAllCaches();
+
+    const targetFloors: Array<'HOSE' | 'HNX' | 'UPCOM'> =
+      exchange === 'ALL' ? ['HOSE', 'HNX', 'UPCOM'] : [exchange];
+
+    const [catalog, idxHistoryRaw] = await Promise.all([
+      fetchFullStockCatalog(),
+      fetchForeignIndexHistory(requestedDate, Math.max(sessions, 20), refresh),
+    ]);
+
+    const wsSnap = requestedDate === today ? wsMgr.getLiveWsSnapshot() : {};
+    const wsHasForeign = Object.values(wsSnap).some(
+      (t) => (t.fBuyVol ?? 0) > 0 || (t.fSellVol ?? 0) > 0 || (t.fBuyValBil ?? 0) > 0 || (t.fSellValBil ?? 0) > 0
+    );
+
+    // Organize index foreign records by date -> floor
+    const byDateFloor = new Map<string, Partial<Record<'HOSE' | 'HNX' | 'UPCOM', ForeignRecord>>>();
+    for (const rec of idxHistoryRaw) {
+      const fl: 'HOSE' | 'HNX' | 'UPCOM' =
+        rec.code === 'HNX' ? 'HNX' : rec.code === 'UPCOM' ? 'UPCOM' : 'HOSE';
+      const bucket = byDateFloor.get(rec.tradingDate) || {};
+      bucket[fl] = rec;
+      byDateFloor.set(rec.tradingDate, bucket);
+    }
+
+    const allDatesDesc = [...byDateFloor.keys()].sort((a, b) => b.localeCompare(a));
+    let resolvedDate = allDatesDesc[0] || requestedDate;
+    if (requestedDate === today && wsHasForeign && resolvedDate < today) {
+      resolvedDate = today;
+    }
+
+    const [rawStockRecs, boardResults] = await Promise.all([
+      fetchForeignStocksByDate(resolvedDate, refresh),
+      Promise.all(targetFloors.map((fl) => fetchExchangeBoardWithFallback(fl, resolvedDate, false))),
+    ]);
+
+    const boardLookup: Record<string, LiveTick> = {};
+    for (const br of boardResults) {
+      for (const [sym, tick] of Object.entries(br.board)) {
+        boardLookup[sym] = tick;
+      }
+    }
+
+    // Build per-stock map from REST records + live SSI WS overlay (if today)
+    const stockMap = new Map<
+      string,
+      {
+        symbol: string;
+        companyName: string;
+        exchange: 'HOSE' | 'HNX' | 'UPCOM';
+        industry: string;
+        price: number;
+        pct: number;
+        buyValBil: number;
+        sellValBil: number;
+        netValBil: number;
+        buyVol: number;
+        sellVol: number;
+        netVol: number;
+        totalRoom: number;
+        currentRoom: number;
+        roomPct: number | null;
+      }
+    >();
+
+    for (const rec of rawStockRecs) {
+      const meta = catalog.stocks[rec.code];
+      const fl = (meta?.exchange === 'HOSE' || meta?.exchange === 'HNX' || meta?.exchange === 'UPCOM'
+        ? meta.exchange
+        : rec.floor) as 'HOSE' | 'HNX' | 'UPCOM';
+      if (exchange !== 'ALL' && fl !== exchange) continue;
+      const brTick = boardLookup[rec.code];
+      stockMap.set(rec.code, {
+        symbol: rec.code,
+        companyName: meta?.companyName || rec.code,
+        exchange: fl,
+        industry: meta?.industry || 'Khác',
+        price: Number((brTick?.last ?? 0).toFixed(2)),
+        pct: Number((brTick?.pct ?? 0).toFixed(2)),
+        buyValBil: Number(rec.buyValBil.toFixed(2)),
+        sellValBil: Number(rec.sellValBil.toFixed(2)),
+        netValBil: Number(rec.netValBil.toFixed(2)),
+        buyVol: rec.buyVol,
+        sellVol: rec.sellVol,
+        netVol: rec.netVol,
+        totalRoom: rec.totalRoom,
+        currentRoom: rec.currentRoom,
+        roomPct:
+          rec.totalRoom > 0
+            ? Number(((rec.currentRoom / rec.totalRoom) * 100).toFixed(1))
+            : null,
+      });
+    }
+
+    // Overlay real-time SSI WS ticks (price, pct, AND live foreign buy/sell when trading today)
+    let liveWsCount = 0;
+    let latestWsTime = '';
+    if (resolvedDate === today) {
+      for (const [sym, wsTick] of Object.entries(wsSnap)) {
+        const meta = catalog.stocks[sym];
+        const fl = wsTick.exchange || (meta?.exchange !== 'INDEX' ? meta?.exchange : undefined);
+        if (!fl || (exchange !== 'ALL' && fl !== exchange)) continue;
+
+        const existing = stockMap.get(sym);
+        const wsBuyVol = wsTick.fBuyVol ?? 0;
+        const wsSellVol = wsTick.fSellVol ?? 0;
+        const wsBuyValBil = wsTick.fBuyValBil ?? 0;
+        const wsSellValBil = wsTick.fSellValBil ?? 0;
+        const hasWsForeign = wsBuyVol > 0 || wsSellVol > 0 || wsBuyValBil > 0 || wsSellValBil > 0;
+
+        if (existing) {
+          liveWsCount++;
+          if (wsTick.time && wsTick.time > latestWsTime) latestWsTime = wsTick.time;
+          existing.price = Number(wsTick.last.toFixed(2));
+          existing.pct = Number(wsTick.pct.toFixed(2));
+          if (wsTick.fCurrentRoom !== undefined && wsTick.fCurrentRoom >= 0) {
+            existing.currentRoom = wsTick.fCurrentRoom;
+            if (existing.totalRoom > 0) {
+              existing.roomPct = Number(((existing.currentRoom / existing.totalRoom) * 100).toFixed(1));
+            }
+          }
+          // Prefer SSI WS foreign totals when they exceed REST snapshot (i.e. fresher intraday prints)
+          if (hasWsForeign && (wsBuyVol > existing.buyVol || wsSellVol > existing.sellVol)) {
+            const bVol = Math.max(existing.buyVol, wsBuyVol);
+            const sVol = Math.max(existing.sellVol, wsSellVol);
+            const bVal = Math.max(existing.buyValBil, wsBuyValBil);
+            const sVal = Math.max(existing.sellValBil, wsSellValBil);
+            existing.buyVol = bVol;
+            existing.sellVol = sVol;
+            existing.netVol = bVol - sVol;
+            existing.buyValBil = Number(bVal.toFixed(2));
+            existing.sellValBil = Number(sVal.toFixed(2));
+            existing.netValBil = Number((bVal - sVal).toFixed(2));
+          }
+        } else if (hasWsForeign) {
+          liveWsCount++;
+          if (wsTick.time && wsTick.time > latestWsTime) latestWsTime = wsTick.time;
+          stockMap.set(sym, {
+            symbol: sym,
+            companyName: meta?.companyName || sym,
+            exchange: fl,
+            industry: meta?.industry || 'Khác',
+            price: Number(wsTick.last.toFixed(2)),
+            pct: Number(wsTick.pct.toFixed(2)),
+            buyValBil: Number(wsBuyValBil.toFixed(2)),
+            sellValBil: Number(wsSellValBil.toFixed(2)),
+            netValBil: Number((wsBuyValBil - wsSellValBil).toFixed(2)),
+            buyVol: wsBuyVol,
+            sellVol: wsSellVol,
+            netVol: wsBuyVol - wsSellVol,
+            totalRoom: 0,
+            currentRoom: wsTick.fCurrentRoom ?? 0,
+            roomPct: null,
+          });
+        }
+      }
+    }
+
+    const activeStocks = [...stockMap.values()]
+      .filter((s) => s.buyValBil > 0 || s.sellValBil > 0 || s.buyVol > 0 || s.sellVol > 0)
+      .sort((a, b) => Math.abs(b.netValBil) - Math.abs(a.netValBil));
+
+    // Per-exchange summary (official index records on resolvedDate, falling back to summed equities)
+    const perExchange: Record<
+      'HOSE' | 'HNX' | 'UPCOM',
+      { buyValBil: number; sellValBil: number; netValBil: number; buyVolMil: number; sellVolMil: number; netVolMil: number }
+    > = {
+      HOSE: { buyValBil: 0, sellValBil: 0, netValBil: 0, buyVolMil: 0, sellVolMil: 0, netVolMil: 0 },
+      HNX: { buyValBil: 0, sellValBil: 0, netValBil: 0, buyVolMil: 0, sellVolMil: 0, netVolMil: 0 },
+      UPCOM: { buyValBil: 0, sellValBil: 0, netValBil: 0, buyVolMil: 0, sellVolMil: 0, netVolMil: 0 },
+    };
+
+    const resolvedIdxBucket = byDateFloor.get(resolvedDate) || {};
+    for (const fl of ['HOSE', 'HNX', 'UPCOM'] as const) {
+      const rec = resolvedIdxBucket[fl];
+      if (rec) {
+        perExchange[fl] = {
+          buyValBil: Number(rec.buyValBil.toFixed(2)),
+          sellValBil: Number(rec.sellValBil.toFixed(2)),
+          netValBil: Number(rec.netValBil.toFixed(2)),
+          buyVolMil: Number((rec.buyVol / 1e6).toFixed(2)),
+          sellVolMil: Number((rec.sellVol / 1e6).toFixed(2)),
+          netVolMil: Number((rec.netVol / 1e6).toFixed(2)),
+        };
+      } else {
+        const flStocks = activeStocks.filter((s) => s.exchange === fl);
+        const bVal = flStocks.reduce((acc, s) => acc + s.buyValBil, 0);
+        const sVal = flStocks.reduce((acc, s) => acc + s.sellValBil, 0);
+        const bVol = flStocks.reduce((acc, s) => acc + s.buyVol, 0);
+        const sVol = flStocks.reduce((acc, s) => acc + s.sellVol, 0);
+        perExchange[fl] = {
+          buyValBil: Number(bVal.toFixed(2)),
+          sellValBil: Number(sVal.toFixed(2)),
+          netValBil: Number((bVal - sVal).toFixed(2)),
+          buyVolMil: Number((bVol / 1e6).toFixed(2)),
+          sellVolMil: Number((sVol / 1e6).toFixed(2)),
+          netVolMil: Number(((bVol - sVol) / 1e6).toFixed(2)),
+        };
+      }
+    }
+
+    // Build chronological daily history (up to `sessions` sessions)
+    const histDatesAsc = [...byDateFloor.keys()]
+      .filter((d) => d <= resolvedDate)
+      .sort((a, b) => a.localeCompare(b));
+    if (!histDatesAsc.includes(resolvedDate) && activeStocks.length > 0) {
+      histDatesAsc.push(resolvedDate);
+    }
+
+    const fullHistory = histDatesAsc.map((d) => {
+      const bkt = byDateFloor.get(d);
+      let buyValBil = 0;
+      let sellValBil = 0;
+      let netValBil = 0;
+      let buyVol = 0;
+      let sellVol = 0;
+      let netVol = 0;
+
+      for (const fl of targetFloors) {
+        const rec = bkt?.[fl];
+        if (rec) {
+          buyValBil += rec.buyValBil;
+          sellValBil += rec.sellValBil;
+          netValBil += rec.netValBil;
+          buyVol += rec.buyVol;
+          sellVol += rec.sellVol;
+          netVol += rec.netVol;
+        } else if (d === resolvedDate) {
+          buyValBil += perExchange[fl].buyValBil;
+          sellValBil += perExchange[fl].sellValBil;
+          netValBil += perExchange[fl].netValBil;
+          buyVol += perExchange[fl].buyVolMil * 1e6;
+          sellVol += perExchange[fl].sellVolMil * 1e6;
+          netVol += perExchange[fl].netVolMil * 1e6;
+        }
+      }
+      return {
+        date: d,
+        dateShort: formatDdMm(d),
+        buyValBil: Number(buyValBil.toFixed(2)),
+        sellValBil: Number(sellValBil.toFixed(2)),
+        netValBil: Number(netValBil.toFixed(2)),
+        buyVolMil: Number((buyVol / 1e6).toFixed(2)),
+        sellVolMil: Number((sellVol / 1e6).toFixed(2)),
+        netVolMil: Number((netVol / 1e6).toFixed(2)),
+        cumNetBil: 0,
+      };
+    });
+
+    const cumNet5Bil = Number(
+      fullHistory.slice(-5).reduce((s, h) => s + h.netValBil, 0).toFixed(2)
+    );
+    const cumNet10Bil = Number(
+      fullHistory.slice(-10).reduce((s, h) => s + h.netValBil, 0).toFixed(2)
+    );
+    const cumNet20Bil = Number(
+      fullHistory.slice(-20).reduce((s, h) => s + h.netValBil, 0).toFixed(2)
+    );
+
+    const history = fullHistory.slice(-sessions);
+    let runCum = 0;
+    for (const h of history) {
+      runCum += h.netValBil;
+      h.cumNetBil = Number(runCum.toFixed(2));
+    }
+
+    const latestHist = history[history.length - 1];
+    const buyValBil = latestHist?.buyValBil ?? 0;
+    const sellValBil = latestHist?.sellValBil ?? 0;
+    const netValBil = latestHist?.netValBil ?? 0;
+    const buyVolMil = latestHist?.buyVolMil ?? 0;
+    const sellVolMil = latestHist?.sellVolMil ?? 0;
+    const netVolMil = latestHist?.netVolMil ?? 0;
+
+    // Group active stocks by SSI ICB industry
+    const sectorAgg = new Map<
+      string,
+      {
+        industry: string;
+        buyValBil: number;
+        sellValBil: number;
+        netValBil: number;
+        buyVol: number;
+        sellVol: number;
+        netVol: number;
+        stockCount: number;
+        topSymbol: string;
+        topAbsNet: number;
+      }
+    >();
+    for (const s of activeStocks) {
+      const g = sectorAgg.get(s.industry) || {
+        industry: s.industry,
+        buyValBil: 0,
+        sellValBil: 0,
+        netValBil: 0,
+        buyVol: 0,
+        sellVol: 0,
+        netVol: 0,
+        stockCount: 0,
+        topSymbol: s.symbol,
+        topAbsNet: -1,
+      };
+      g.buyValBil += s.buyValBil;
+      g.sellValBil += s.sellValBil;
+      g.netValBil += s.netValBil;
+      g.buyVol += s.buyVol;
+      g.sellVol += s.sellVol;
+      g.netVol += s.netVol;
+      g.stockCount += 1;
+      if (Math.abs(s.netValBil) > g.topAbsNet) {
+        g.topAbsNet = Math.abs(s.netValBil);
+        g.topSymbol = s.symbol;
+      }
+      sectorAgg.set(s.industry, g);
+    }
+
+    const sectors = [...sectorAgg.values()]
+      .map((g) => ({
+        industry: g.industry,
+        buyValBil: Number(g.buyValBil.toFixed(2)),
+        sellValBil: Number(g.sellValBil.toFixed(2)),
+        netValBil: Number(g.netValBil.toFixed(2)),
+        buyVol: g.buyVol,
+        sellVol: g.sellVol,
+        netVol: g.netVol,
+        stockCount: g.stockCount,
+        topSymbol: g.topSymbol,
+      }))
+      .sort((a, b) => b.netValBil - a.netValBil);
+
+    const topBuy = activeStocks
+      .filter((s) => s.netValBil > 0)
+      .sort((a, b) => b.netValBil - a.netValBil)
+      .slice(0, 10);
+
+    const topSell = activeStocks
+      .filter((s) => s.netValBil < 0)
+      .sort((a, b) => a.netValBil - b.netValBil)
+      .slice(0, 10);
+
+    const buyStocksCount = activeStocks.filter((s) => s.netValBil > 0).length;
+    const sellStocksCount = activeStocks.filter((s) => s.netValBil < 0).length;
+
+    const isLiveWs = resolvedDate === today && liveWsCount > 0;
+    res.json({
+      exchange,
+      requestedDate,
+      resolvedDate,
+      resolvedDateDisplay: formatDdMmYyyy(resolvedDate),
+      resolvedDateShort: formatDdMm(resolvedDate),
+      source: isLiveWs ? 'VNDirect + SSI WS' : 'VNDirect',
+      isLiveWs,
+      liveWsCount,
+      syncTime: latestWsTime || vnNowParts().hms,
+      summary: {
+        buyValBil,
+        sellValBil,
+        netValBil,
+        buyVolMil,
+        sellVolMil,
+        netVolMil,
+        cumNet5Bil,
+        cumNet10Bil,
+        cumNet20Bil,
+        buyStocksCount,
+        sellStocksCount,
+        activeStocksCount: activeStocks.length,
+        perExchange,
+      },
+      history,
+      sectors,
+      topBuy,
+      topSell,
+      stocks: activeStocks,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Foreign trading error' });
   }
 });
 
