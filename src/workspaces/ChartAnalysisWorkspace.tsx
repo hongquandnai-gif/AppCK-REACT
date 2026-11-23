@@ -149,7 +149,7 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     loadEod(false);
   }, [subTab, loadEod]);
 
-  // Patch latest EOD candle in-place from WS ticks without disturbing Plotly zoom/hover
+  // Patch latest EOD candle (or append today's live candle) from SSI WS ticks without disturbing Plotly zoom/hover
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'eod' || hEnd < today) return;
     const sym = symSel.trim().toUpperCase();
@@ -157,12 +157,33 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     if (!tick) return;
     setEodData((prev: any) => {
       if (!prev || prev.empty || prev.symbol !== sym || !prev.bars?.length) return prev;
-      const nextBars = patchOhlcBarsWithTick(prev.bars, tick, false);
-      if (nextBars === prev.bars) return prev;
-      const nextAth = Math.max(prev.rawAth || 0, tick.last);
-      return { ...prev, bars: nextBars, rawAth: nextAth };
+      // For weekly/monthly bars, update current candle in-place without appending a daily candle
+      const effectiveTick = hTf === 'D' ? tick : { ...tick, tradeDate: undefined };
+      const nextBars = patchOhlcBarsWithTick(prev.bars, effectiveTick, {
+        isIntraday: false,
+        activeMas,
+        showMaVol,
+      });
+      const isWsTick = tick.liveSource === 'SSI_WS';
+      if (nextBars === prev.bars && (!isWsTick || prev.liveWsActive)) return prev;
+      const lastBar = nextBars[nextBars.length - 1];
+      const nextAth = Math.max(prev.rawAth || 0, tick.high || 0, tick.last);
+      const nextSource =
+        isWsTick && prev.source && !String(prev.source).includes('SSI WS')
+          ? `${prev.source} + SSI WS`
+          : prev.source;
+      return {
+        ...prev,
+        bars: nextBars,
+        rawAth: nextAth,
+        resolvedDate: lastBar?.date || prev.resolvedDate,
+        resolvedDateDisplay: lastBar?.dtDisplay || prev.resolvedDateDisplay,
+        source: nextSource,
+        liveWsActive: isWsTick || prev.liveWsActive,
+        liveTime: tick.time || prev.liveTime,
+      };
     });
-  }, [tickVersion, ticks, symSel, liveAuto, isActive, subTab, hEnd, today]);
+  }, [tickVersion, ticks, symSel, liveAuto, isActive, subTab, hEnd, today, hTf, activeMas, showMaVol]);
 
   const eodMaInfo = useMemo(() => {
     const list = activeMas.map((p, idx) => ({
@@ -254,18 +275,37 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     loadIntraday(false, false);
   }, [subTab, loadIntraday]);
 
-  // Patch latest intraday candle in-place from WS ticks with zero flicker
+  // Patch latest intraday candle (or roll into next timeframe bucket) from SSI WS ticks with zero flicker
   useEffect(() => {
-    if (!liveAuto || !isActive || subTab !== 'intraday' || inDate !== today) return;
+    if (!liveAuto || !isActive || subTab !== 'intraday' || inDate < today) return;
     const sym = inSym.trim().toUpperCase();
     const tick = ticks[sym];
     if (!tick) return;
     setIntraData((prev: any) => {
       if (!prev || prev.empty || prev.symbol !== sym || !prev.bars?.length) return prev;
-      const nextBars = patchOhlcBarsWithTick(prev.bars, tick, !prev.fallbackToDaily);
-      return nextBars === prev.bars ? prev : { ...prev, bars: nextBars };
+      const tfMinutes = Math.max(1, Number(inTf) || 1);
+      const nextBars = patchOhlcBarsWithTick(prev.bars, tick, {
+        isIntraday: true,
+        tfMinutes,
+        fallbackToDaily: Boolean(prev.fallbackToDaily),
+      });
+      const isWsTick = tick.liveSource === 'SSI_WS';
+      if (nextBars === prev.bars && (!isWsTick || prev.liveWsActive)) return prev;
+      const lastBar = nextBars[nextBars.length - 1];
+      const nextSource =
+        isWsTick && prev.source && !String(prev.source).includes('SSI WS')
+          ? `${prev.source} + SSI WS`
+          : prev.source;
+      return {
+        ...prev,
+        bars: nextBars,
+        resolvedDate: lastBar?.date || prev.resolvedDate,
+        source: nextSource,
+        liveWsActive: isWsTick || prev.liveWsActive,
+        liveTime: tick.time || prev.liveTime,
+      };
     });
-  }, [tickVersion, ticks, inSym, liveAuto, isActive, subTab, inDate, today]);
+  }, [tickVersion, ticks, inSym, inTf, liveAuto, isActive, subTab, inDate, today]);
 
   // Silently reconcile new intraday minute bars on WS board sync events
   const lastIntraSyncRef = useRef(syncVersion.board);
@@ -495,6 +535,15 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                     <span>Nguồn: {eodData.source}</span>
                   </>
                 )}
+                {eodData.liveWsActive && (
+                  <>
+                    <span className="text-slate-300">·</span>
+                    <span className="inline-flex items-center gap-1 font-semibold text-[#059669] tabular-nums">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                      SSI WS{eodData.liveTime ? ` (${eodData.liveTime})` : ''}
+                    </span>
+                  </>
+                )}
               </div>
 
               <DynamicOhlcChart
@@ -604,6 +653,15 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                   <>
                     <span className="text-slate-300">·</span>
                     <span>Nguồn: {intraData.source}</span>
+                  </>
+                )}
+                {intraData.liveWsActive && (
+                  <>
+                    <span className="text-slate-300">·</span>
+                    <span className="inline-flex items-center gap-1 font-semibold text-[#059669] tabular-nums">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                      SSI WS{intraData.liveTime ? ` (${intraData.liveTime})` : ''}
+                    </span>
                   </>
                 )}
                 {!intraData.fallbackToDaily &&

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { INDUSTRY_GROUPS, MA_WINDOWS } from '../shared/constants';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
-import { patchStockRowsWithTicks } from '../utils/livePatch';
+import { patchSectorMaWithTicks } from '../utils/livePatch';
 import {
   FieldLabel,
   LoadingBar,
@@ -40,7 +40,14 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
   const [maExchange, setMaExchange] = useState<'HOSE' | 'HNX' | 'UPCOM' | 'ALL'>('HOSE');
   const [indChoice, setIndChoice] = useState('Tất cả ngành');
   const [maAsof, setMaAsof] = useState(today);
-  const [secMaRes, setSecMaRes] = useState<{ mode: 'all' | 'group'; rows: any[] } | null>(null);
+  const [secMaRes, setSecMaRes] = useState<{
+    mode: 'all' | 'group';
+    rows: any[];
+    stockSnapshots?: any[];
+    liveWsCount?: number;
+    syncTime?: string;
+    liveUpdated?: boolean;
+  } | null>(null);
   const [secMaLoading, setSecMaLoading] = useState(false);
 
   useEffect(() => {
@@ -49,24 +56,27 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
     }
   }, [sectorOptions, indChoice]);
 
-  const groupSymbols = useMemo(() => {
-    if (secMaRes?.mode !== 'group' || !secMaRes.rows?.length) return [];
-    return secMaRes.rows.map((r) => String(r.symbol || '')).filter(Boolean);
-  }, [secMaRes]);
+  // Subscribe ALL tracked stocks in BOTH 'all' (all sectors via stockSnapshots) and 'group' modes
+  const trackedMaSymbols = useMemo(() => {
+    if (!secMaRes) return [];
+    if (secMaRes.mode === 'all' && secMaRes.stockSnapshots?.length) {
+      return secMaRes.stockSnapshots.map((s) => String(s.symbol || '')).filter(Boolean);
+    }
+    if (secMaRes.mode === 'group' && secMaRes.rows?.length) {
+      return secMaRes.rows.map((r) => String(r.symbol || '')).filter(Boolean);
+    }
+    return [];
+  }, [secMaRes?.mode, secMaRes?.stockSnapshots?.length, secMaRes?.rows?.length]);
 
   useSubscribeSymbols(
-    groupSymbols,
-    isActive && subTab === 'ma' && maAsof === today && liveAuto && groupSymbols.length > 0
+    trackedMaSymbols,
+    isActive && subTab === 'ma' && maAsof >= today && liveAuto && trackedMaSymbols.length > 0
   );
 
-  // Patch live prices & % change in-place on per-industry stock rows without interrupting table scroll
+  // Patch Sector MA in-place from real-time SSI WS ticks (both 'all' and 'group' modes)
   useEffect(() => {
-    if (!liveAuto || !isActive || subTab !== 'ma' || maAsof !== today) return;
-    setSecMaRes((prev) => {
-      if (!prev || prev.mode !== 'group' || !prev.rows.length) return prev;
-      const nextRows = patchStockRowsWithTicks(prev.rows, ticks);
-      return nextRows === prev.rows ? prev : { ...prev, rows: nextRows };
-    });
+    if (!liveAuto || !isActive || subTab !== 'ma' || maAsof < today) return;
+    setSecMaRes((prev) => patchSectorMaWithTicks(prev, ticks));
   }, [tickVersion, ticks, liveAuto, isActive, subTab, maAsof, today]);
 
   const runSectorMa = async () => {
@@ -218,7 +228,27 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
           {secMaLoading && <LoadingBar text="Đang quét đường trung bình MA theo chuẩn ngành SSI..." />}
 
           {secMaRes && secMaRes.rows.length > 0 && (
-            <div className="bg-white border border-slate-200 rounded-[10px] p-2 overflow-x-auto">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-600 px-1 tabular-nums">
+                <strong className="text-slate-900">
+                  {secMaRes.mode === 'all'
+                    ? `${secMaRes.rows.length} nhóm ngành (SSI ICB)`
+                    : `${indChoice} (${secMaRes.rows.length} mã)`}
+                </strong>
+                <span className="text-slate-300">·</span>
+                <span>Sàn: {maExchange === 'ALL' ? 'HOSE · HNX · UPCOM' : maExchange}</span>
+                {(secMaRes.liveUpdated || (secMaRes.liveWsCount ?? 0) > 0) && maAsof >= today && (
+                  <>
+                    <span className="text-slate-300">·</span>
+                    <span className="inline-flex items-center gap-1 font-semibold text-[#059669]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                      SSI WS Live
+                      {secMaRes.syncTime ? ` (${secMaRes.syncTime})` : ''}
+                    </span>
+                  </>
+                )}
+              </div>
+              <div className="bg-white border border-slate-200 rounded-[10px] p-2 overflow-x-auto">
               {secMaRes.mode === 'all' ? (
                 <table className="w-full text-[13px] border-collapse">
                   <thead>
@@ -289,6 +319,7 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
                   </tbody>
                 </table>
               )}
+              </div>
             </div>
           )}
         </div>

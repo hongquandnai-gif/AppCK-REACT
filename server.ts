@@ -60,13 +60,63 @@ function patchLiveCandle(bars: OhlcvBar[], tick: LiveTick | undefined, isIntrada
   if (!bars.length || !tick || !tick.last) return bars;
   const out = bars.map((b) => ({ ...b }));
   const last = out[out.length - 1];
+
+  // For daily/EOD bars: if live SSI WS tick is for a NEWER trading day than history's last bar, APPEND today's candle!
+  if (!isIntraday && tick.tradeDate && tick.tradeDate > last.date) {
+    const open = tick.open && tick.open > 0 ? tick.open : tick.last;
+    const high = Math.max(open, tick.high && tick.high > 0 ? tick.high : tick.last, tick.last);
+    const low = Math.min(open, tick.low && tick.low > 0 ? tick.low : tick.last, tick.last);
+    out.push({
+      t: Math.floor(Date.now() / 1000),
+      date: tick.tradeDate,
+      time: tick.time ? tick.time.slice(0, 5) : vnNowParts().hm,
+      datetime: `${tick.tradeDate} ${tick.time ? tick.time.slice(0, 5) : vnNowParts().hm}`,
+      open,
+      high,
+      low,
+      close: tick.last,
+      volume: tick.volume > 0 ? tick.volume : 0,
+    });
+    return out;
+  }
+
   last.close = tick.last;
-  last.high = Math.max(last.high, tick.last);
-  last.low = Math.min(last.low, tick.last);
+  last.high = Math.max(last.high, !isIntraday && tick.high ? tick.high : tick.last, tick.last);
+  last.low = Math.min(last.low, !isIntraday && tick.low ? tick.low : tick.last, tick.last);
   if (!isIntraday && tick.volume > 0) {
     last.volume = Math.max(last.volume, tick.volume);
   }
   return out;
+}
+
+function resampleIntradayBars(bars1m: OhlcvBar[], tfMinutes: number): OhlcvBar[] {
+  const step = Math.max(1, Math.round(tfMinutes));
+  if (step <= 1 || !bars1m.length) return bars1m;
+  const buckets = new Map<string, OhlcvBar>();
+  for (const b of bars1m) {
+    const [hh, mm] = b.time.split(':').map(Number);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) continue;
+    const totalMin = hh * 60 + mm;
+    const floored = Math.floor(totalMin / step) * step;
+    const fh = String(Math.floor(floored / 60)).padStart(2, '0');
+    const fm = String(floored % 60).padStart(2, '0');
+    const hm = `${fh}:${fm}`;
+    const key = `${b.date} ${hm}`;
+    const ex = buckets.get(key);
+    if (!ex) {
+      buckets.set(key, {
+        ...b,
+        time: hm,
+        datetime: key,
+      });
+    } else {
+      ex.high = Math.max(ex.high, b.high);
+      ex.low = Math.min(ex.low, b.low);
+      ex.close = b.close;
+      ex.volume += b.volume;
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.t - b.t);
 }
 
 function mergeLiveIntradaySeries(
@@ -169,11 +219,12 @@ async function buildStatusPayload() {
   return {
     connected: true,
     upstreamSsiConnected: wsMgr.isConnected,
+    ssiWsTickCount: wsMgr.getLiveWsTickCount(),
     hoseCount: catalog.counts.HOSE,
     hnxCount: catalog.counts.HNX,
     upcomCount: catalog.counts.UPCOM,
     totalCount: catalog.counts.total,
-    dataSource: isSsiRestBlocked() ? 'VNDirect' : catalog.source,
+    dataSource: wsMgr.getLiveWsTickCount() > 0 ? 'SSI WS' : isSsiRestBlocked() ? 'VNDirect' : catalog.source,
     classificationStandard: catalog.classificationStandard,
     ssiRestBlocked: isSsiRestBlocked(),
     vnClock: parts.clock,
@@ -742,7 +793,15 @@ app.get('/api/treemap', async (req, res) => {
       fetchExchangeBoardWithFallback(exchange, tmDate, refresh),
     ]);
 
-    const wsSnap = tmDate === today && isVnMarketHours() ? wsMgr.getSnapshot() : {};
+    const wsSnap = tmDate === today ? wsMgr.getLiveWsSnapshot() : {};
+    const allSyms = new Set<string>(Object.keys(boardRes.board));
+    // Also include any symbol on this exchange that already has live SSI WS ticks today
+    for (const [sym, tick] of Object.entries(wsSnap)) {
+      const meta = catalog.stocks[sym];
+      const tickEx = tick.exchange || meta?.exchange;
+      if (tickEx === exchange) allSyms.add(sym);
+    }
+
     const rows: {
       symbol: string;
       companyName: string;
@@ -754,29 +813,37 @@ app.get('/api/treemap', async (req, res) => {
     let cntUp = 0;
     let cntDown = 0;
     let cntRef = 0;
+    let liveWsMatched = 0;
+    let latestWsTime = '';
 
-    for (const [sym, baseItem] of Object.entries(boardRes.board)) {
+    for (const sym of allSyms) {
+      const baseItem = boardRes.board[sym];
       const wsTick = wsSnap[sym];
-      const lastPx = wsTick?.last || baseItem.last || 0;
-      const vol = wsTick?.volume && wsTick.volume > 0 ? wsTick.volume : baseItem.volume || 0;
-      const pct = wsTick ? wsTick.pct : baseItem.pct || 0;
+      if (wsTick) {
+        liveWsMatched++;
+        if (wsTick.time && wsTick.time > latestWsTime) latestWsTime = wsTick.time;
+      }
+      const lastPx = wsTick?.last || baseItem?.last || 0;
+      const vol = wsTick?.volume && wsTick.volume > 0 ? wsTick.volume : baseItem?.volume || 0;
+      const pct = wsTick ? wsTick.pct : baseItem?.pct || 0;
       if (lastPx <= 0 || vol <= 0) continue;
-
-      if (pct > 0) cntUp++;
-      else if (pct < 0) cntDown++;
-      else cntRef++;
 
       const meta = catalog.stocks[sym];
       const ind = meta?.industry || 'Khác';
 
       const valBil =
-        baseItem.value_bil && baseItem.value_bil > 0 && !wsTick
+        wsTick?.value_bil && wsTick.value_bil > 0
+          ? wsTick.value_bil
+          : baseItem?.value_bil && baseItem.value_bil > 0 && !wsTick
           ? baseItem.value_bil
           : (lastPx * vol) / 1e6;
       const sizeVal =
         sizeMode === 'value' ? Number(valBil.toFixed(2)) : Math.round(vol);
 
       if (sizeVal > 0) {
+        if (pct > 0) cntUp++;
+        else if (pct < 0) cntDown++;
+        else cntRef++;
         rows.push({
           symbol: sym,
           companyName: meta?.companyName || sym,
@@ -788,13 +855,15 @@ app.get('/api/treemap', async (req, res) => {
       }
     }
 
+    const isLiveSsi = tmDate === today && liveWsMatched > 0;
     res.json({
       exchange,
-      mode: boardRes.mode,
-      source: boardRes.source,
-      tradeDate: boardRes.tradeDate,
-      tradeDateDisplay: formatDdMmYyyy(boardRes.tradeDate),
-      syncTime: boardRes.syncTime,
+      mode: isLiveSsi ? 'live' : boardRes.mode,
+      source: isLiveSsi ? 'SSI WS' : boardRes.source,
+      tradeDate: isLiveSsi ? today : boardRes.tradeDate,
+      tradeDateDisplay: formatDdMmYyyy(isLiveSsi ? today : boardRes.tradeDate),
+      syncTime: isLiveSsi ? latestWsTime || vnNowParts().hms : boardRes.syncTime,
+      liveWsMatched,
       counts: { up: cntUp, down: cntDown, ref: cntRef },
       totalSymbols: rows.length,
       rows,
@@ -959,8 +1028,20 @@ app.post('/api/sector-ma', async (req, res) => {
       industry,
       excludePenny: industry === 'Tất cả ngành',
     });
+    const today = vnTodayStr();
     const syms = await resolveLiquidUniverse(rawSyms, exchange, asOfDate, 260);
     const dfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(asOfDate, -450), asOfDate, 'D');
+
+    // Merge real-time SSI WebSocket ticks into today's closes before computing MA10..MA200
+    const liveWsSnap = asOfDate >= today ? wsMgr.getLiveWsSnapshot(syms) : {};
+    let liveWsCount = 0;
+    for (const sym of Object.keys(dfs)) {
+      const tick = liveWsSnap[sym];
+      if (tick && tick.last > 0) {
+        dfs[sym] = patchLiveCandle(dfs[sym], tick, false);
+        liveWsCount++;
+      }
+    }
 
     const maStt = (px: number, mv: number | null) => {
       if (mv === null || !Number.isFinite(mv)) return '—';
@@ -969,6 +1050,14 @@ app.post('/api/sector-ma', async (req, res) => {
 
     if (industry === 'Tất cả ngành') {
       const groups = new Map<string, { tot: number; a20: number; b50: number; bestD: number; hl: string }>();
+      const stockSnapshots: {
+        symbol: string;
+        industry: string;
+        price: number;
+        ma20: number | null;
+        ma50: number | null;
+      }[] = [];
+
       for (const [s, bars] of Object.entries(dfs)) {
         if (bars.length < 50) continue;
         const ind = industryMap[s] || 'Khác';
@@ -976,6 +1065,13 @@ app.post('/api/sector-ma', async (req, res) => {
         const cNow = closes[closes.length - 1];
         const m20 = rollingMean(closes, 20, 20)[closes.length - 1];
         const m50 = rollingMean(closes, 50, 50)[closes.length - 1];
+        stockSnapshots.push({
+          symbol: s,
+          industry: ind,
+          price: Number(cNow.toFixed(2)),
+          ma20: m20 !== null ? Number(m20.toFixed(4)) : null,
+          ma50: m50 !== null ? Number(m50.toFixed(4)) : null,
+        });
         const g = groups.get(ind) || { tot: 0, a20: 0, b50: 0, bestD: -1e9, hl: '' };
         g.tot += 1;
         if (maStt(cNow, m20) === 'TRÊN') g.a20 += 1;
@@ -1007,7 +1103,13 @@ app.post('/api/sector-ma', async (req, res) => {
       });
 
       rows.sort((a, b) => b.pctStrong - a.pctStrong || a.pctWeak - b.pctWeak);
-      return res.json({ mode: 'all', rows });
+      return res.json({
+        mode: 'all',
+        liveWsCount,
+        syncTime: liveWsCount > 0 ? vnNowParts().hms : asOfDate,
+        rows,
+        stockSnapshots,
+      });
     }
 
     const rows = [];
@@ -1018,21 +1120,30 @@ app.post('/api/sector-ma', async (req, res) => {
       const cPrev = closes.length >= 2 ? closes[closes.length - 2] : cNow;
       let score = 0;
       const mas: Record<string, string> = {};
+      const maValues: Record<string, number | null> = {};
       for (const w of MA_WINDOWS) {
         if (closes.length >= w) {
           const mv = rollingMean(closes, w, w)[closes.length - 1];
           const stt = maStt(cNow, mv);
           if (stt === 'TRÊN') score += 1;
           mas[`MA${w}`] = mv !== null ? `${stt} (${mv.toFixed(2)})` : '—';
+          maValues[`MA${w}`] = mv !== null ? Number(mv.toFixed(4)) : null;
         } else {
           mas[`MA${w}`] = '—';
+          maValues[`MA${w}`] = null;
         }
       }
+      const wsTick = liveWsSnap[s];
       rows.push({
         symbol: s,
         price: Number(cNow.toFixed(2)),
-        changePct: cPrev > 0 ? Number(((cNow / cPrev - 1) * 100).toFixed(2)) : 0,
+        changePct: wsTick
+          ? Number(wsTick.pct.toFixed(2))
+          : cPrev > 0
+          ? Number(((cNow / cPrev - 1) * 100).toFixed(2))
+          : 0,
         mas,
+        maValues,
         _score: score,
       });
     }
@@ -1040,6 +1151,8 @@ app.post('/api/sector-ma', async (req, res) => {
     rows.sort((a, b) => b._score - a._score || a.symbol.localeCompare(b.symbol));
     res.json({
       mode: 'group',
+      liveWsCount,
+      syncTime: liveWsCount > 0 ? vnNowParts().hms : asOfDate,
       rows: rows.map(({ _score, ...rest }) => rest),
     });
   } catch (err: any) {
@@ -1393,7 +1506,10 @@ app.get('/api/chart/eod', async (req, res) => {
 
     wsMgr.subscribe([symbol]);
     const tick =
-      endDate >= today && isVnMarketHours() ? wsMgr.getSnapshot([symbol])[symbol] : undefined;
+      endDate >= today
+        ? wsMgr.getLiveWsSnapshot([symbol])[symbol] ||
+          (isVnMarketHours() ? wsMgr.getSnapshot([symbol])[symbol] : undefined)
+        : undefined;
 
     const [catalog, fetched] = await Promise.all([
       fetchFullStockCatalog(),
@@ -1462,7 +1578,9 @@ app.get('/api/chart/eod', async (req, res) => {
       companyName: meta?.companyName || symbol,
       exchange: meta?.exchange || '',
       industry: meta?.industry || '',
-      source: fetched.source,
+      source: tick?.liveSource === 'SSI_WS' ? `${fetched.source} + SSI WS` : fetched.source,
+      liveWsActive: tick?.liveSource === 'SSI_WS',
+      liveTime: tick?.liveSource === 'SSI_WS' ? tick.time : null,
       resolvedDate,
       resolvedDateDisplay: resolvedDate ? formatDdMmYyyy(resolvedDate) : null,
       empty: outBars.length === 0,
@@ -1474,19 +1592,23 @@ app.get('/api/chart/eod', async (req, res) => {
   }
 });
 
-// 4.2 INTRADAY CHART (7-day lookback to latest session + automatic EOD fallback)
+// 4.2 INTRADAY CHART (7-day lookback to latest session + live SSI WS minute bars + automatic EOD fallback)
 app.get('/api/chart/intraday', async (req, res) => {
   try {
     const today = vnTodayStr();
     const symbol = String(req.query.symbol || 'FPT').toUpperCase().trim();
     const dateStr = String(req.query.date || today);
     const tf = String(req.query.tf || '1');
+    const tfMinutes = Math.max(1, Number(tf) || 1);
     const refresh = req.query.refresh === '1';
 
     if (refresh) clearAllCaches();
     wsMgr.subscribe([symbol]);
     const tick =
-      dateStr === today && isVnMarketHours() ? wsMgr.getSnapshot([symbol])[symbol] : undefined;
+      dateStr === today
+        ? wsMgr.getLiveWsSnapshot([symbol])[symbol] ||
+          (isVnMarketHours() ? wsMgr.getSnapshot([symbol])[symbol] : undefined)
+        : undefined;
 
     const lookbackStart = addDaysToDateStr(dateStr, -7);
     const [catalog, fetched] = await Promise.all([
@@ -1500,13 +1622,15 @@ app.get('/api/chart/intraday', async (req, res) => {
     let resolvedDate: string | null = null;
     let bars = fetched.bars.filter((b) => b.date <= dateStr);
 
-    if (dateStr === today && tf === '1') {
-      const wsBars = wsMgr.getMinuteBars(symbol);
-      if (wsBars.length) {
+    if (dateStr === today) {
+      const wsBars1m = wsMgr.getMinuteBars(symbol);
+      const wsBarsResampled = resampleIntradayBars(wsBars1m, tfMinutes);
+      if (wsBarsResampled.length) {
         const todayBars = bars.filter((b) => b.date === today);
-        const merged = mergeLiveIntradaySeries(todayBars, wsBars, today);
+        const merged = mergeLiveIntradaySeries(todayBars, wsBarsResampled, today);
         if (merged.length) {
           bars = merged;
+          source = 'SSI';
         }
       }
     }
@@ -1576,7 +1700,9 @@ app.get('/api/chart/intraday', async (req, res) => {
       companyName: meta?.companyName || symbol,
       exchange: meta?.exchange || '',
       industry: meta?.industry || '',
-      source,
+      source: tick?.liveSource === 'SSI_WS' ? `${source} + SSI WS` : source,
+      liveWsActive: tick?.liveSource === 'SSI_WS',
+      liveTime: tick?.liveSource === 'SSI_WS' ? tick.time : null,
       requestedDate: dateStr,
       requestedDateDisplay: formatDdMmYyyy(dateStr),
       resolvedDate,
@@ -1892,13 +2018,21 @@ function attachRealtimeWebSocketHub(httpServer: http.Server) {
             .map((s: unknown) => String(s || '').toUpperCase().trim())
             .filter(Boolean);
           const toUpstream: string[] = [];
+          let hasWildcard = false;
           for (const s of syms) {
             subs.add(s);
-            if (s !== '*') toUpstream.push(s);
+            if (s === '*') hasWildcard = true;
+            else toUpstream.push(s);
+          }
+          if (hasWildcard) {
+            const liveSnap = wsMgr.getLiveWsSnapshot();
+            if (Object.keys(liveSnap).length > 0) {
+              sendSafe(ws, { type: 'ticks', ticks: liveSnap, ts: vnNowParts().hms });
+            }
           }
           if (toUpstream.length) {
             wsMgr.subscribe(toUpstream);
-            const snap = wsMgr.getSnapshot(toUpstream);
+            const snap = wsMgr.getLiveWsSnapshot(toUpstream);
             if (Object.keys(snap).length > 0) {
               sendSafe(ws, { type: 'ticks', ticks: snap, ts: vnNowParts().hms });
             }

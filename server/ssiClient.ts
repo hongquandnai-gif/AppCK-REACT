@@ -10,6 +10,7 @@ import {
   selectCatalogSymbols,
   type ClassifiedStockMeta,
 } from './ssiClassifier.ts';
+import { parseSsiPipeTick } from './ssiPipeParser.ts';
 
 export { buildIndustryMapFromCatalog, selectCatalogSymbols };
 
@@ -39,12 +40,19 @@ export interface OhlcvFetchResult {
 export interface LiveTick {
   symbol: string;
   last: number;
+  open?: number;
+  high?: number;
+  low?: number;
   ref: number | null;
   delta: number;
   pct: number;
   volume: number;
+  lastVol?: number;
   value_bil?: number;
   time: string;
+  tradeDate?: string;
+  exchange?: 'HOSE' | 'HNX' | 'UPCOM';
+  liveSource?: 'SSI_WS' | 'BOARD';
 }
 
 export type StockMeta = ClassifiedStockMeta;
@@ -1095,6 +1103,8 @@ export class SSIWebSocketManager {
   private static readonly WS_URL = 'wss://iboard-pushstream.ssi.com.vn/realtime';
 
   private liveTicks = new Map<string, LiveTick>();
+  private ssiWsTicks = new Map<string, LiveTick>();
+  private prevCumVol = new Map<string, number>();
   private liveBoard = new Map<string, LiveTick>();
   private boardUpdatedAt: string | null = null;
   private boardSource: 'SSI' | 'VNDirect' = 'SSI';
@@ -1203,7 +1213,6 @@ export class SSIWebSocketManager {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     try {
       const stockSyms = symbols.filter((s) => !ALL_INDEX_SYMBOLS.has(s));
-      const idxSyms = symbols.filter((s) => ALL_INDEX_SYMBOLS.has(s));
 
       for (let i = 0; i < stockSyms.length; i += 150) {
         const chunk = stockSyms.slice(i, i + 150);
@@ -1213,23 +1222,6 @@ export class SSIWebSocketManager {
             topic: 'stockRealtimeByListV2',
             variables: chunk,
             component: 'priceTableEquities',
-          })
-        );
-      }
-
-      if (idxSyms.length) {
-        const expanded = new Set<string>();
-        for (const s of idxSyms) {
-          for (const alias of SSI_INDEX_ALIASES[s] || [s]) {
-            expanded.add(alias);
-          }
-        }
-        this.ws.send(
-          JSON.stringify({
-            type: 'sub',
-            topic: 'indexRealtimeByList',
-            variables: [...expanded].sort(),
-            component: 'indexBar',
           })
         );
       }
@@ -1263,9 +1255,20 @@ export class SSIWebSocketManager {
       ws.on('message', (rawBuf) => {
         const message = rawBuf.toString('utf8');
         this.lastMsgTime = vnNowParts().hms;
+
+        // Primary SSI stockRealtimeByListV2 wire format: pipe-delimited `MAIN|S#<SYM>|...`
+        if (message.startsWith('MAIN|')) {
+          const parsed = parseSsiPipeTick(message);
+          if (parsed) {
+            this.recordRealtimeTick(parsed);
+          }
+          return;
+        }
+
         if (!message.startsWith('{')) return;
         try {
           const data = JSON.parse(message);
+          if (data?.errors) return;
           const payload = data?.data ?? data;
           if (Array.isArray(payload)) {
             for (const item of payload) {
@@ -1301,6 +1304,132 @@ export class SSIWebSocketManager {
     }
   }
 
+  private recordRealtimeTick(parsed: {
+    symbol: string;
+    exchange?: 'HOSE' | 'HNX' | 'UPCOM';
+    last: number;
+    open?: number;
+    high?: number;
+    low?: number;
+    ref: number | null;
+    delta: number;
+    pct: number;
+    volume: number;
+    lastVol?: number;
+    value_bil?: number;
+  }) {
+    const sym = parsed.symbol;
+    const parts = vnNowParts();
+
+    if (parts.dateStr !== this.barDate) {
+      this.minuteBars.clear();
+      this.ssiWsTicks.clear();
+      this.prevCumVol.clear();
+      this.barDate = parts.dateStr;
+    }
+
+    const prevWs = this.ssiWsTicks.get(sym);
+    const refVal = parsed.ref ?? prevWs?.ref ?? null;
+    const prevVol = this.prevCumVol.get(sym);
+    let deltaVol = 0;
+    if (parsed.volume > 0) {
+      if (prevVol !== undefined && parsed.volume >= prevVol) {
+        deltaVol = parsed.volume - prevVol;
+      } else if (parsed.lastVol && parsed.lastVol > 0) {
+        deltaVol = parsed.lastVol;
+      }
+      this.prevCumVol.set(sym, parsed.volume);
+    }
+
+    const tick: LiveTick = {
+      symbol: sym,
+      exchange: parsed.exchange ?? prevWs?.exchange,
+      last: parsed.last,
+      open: parsed.open ?? prevWs?.open,
+      high: parsed.high ?? (prevWs?.high ? Math.max(prevWs.high, parsed.last) : parsed.last),
+      low: parsed.low ?? (prevWs?.low ? Math.min(prevWs.low, parsed.last) : parsed.last),
+      ref: refVal,
+      delta: parsed.delta,
+      pct: parsed.pct,
+      volume: parsed.volume > 0 ? parsed.volume : prevWs?.volume ?? 0,
+      lastVol: parsed.lastVol,
+      value_bil: parsed.value_bil ?? prevWs?.value_bil,
+      time: parts.hms,
+      tradeDate: parts.dateStr,
+      liveSource: 'SSI_WS',
+    };
+
+    const minuteKey = `${parts.dateStr} ${parts.hm}`;
+    const minuteUnix = Math.floor(Date.now() / 60_000) * 60;
+    const targets = new Set([sym, ...(WS_INDEX_CANONICAL_MIRROR[sym] || [])]);
+
+    const emitted: Record<string, LiveTick> = {};
+    for (const tSym of targets) {
+      const mirroredTick: LiveTick = { ...tick, symbol: tSym };
+      const prevAny = this.ssiWsTicks.get(tSym);
+      this.ssiWsTicks.set(tSym, mirroredTick);
+      this.liveTicks.set(tSym, mirroredTick);
+
+      // Only broadcast when price, volume, pct, or value actually changed (order-book-only updates skipped)
+      if (
+        !prevAny ||
+        prevAny.last !== mirroredTick.last ||
+        prevAny.volume !== mirroredTick.volume ||
+        prevAny.pct !== mirroredTick.pct ||
+        prevAny.value_bil !== mirroredTick.value_bil
+      ) {
+        emitted[tSym] = mirroredTick;
+      }
+
+      const existingBoard = this.liveBoard.get(tSym);
+      if (existingBoard) {
+        this.liveBoard.set(tSym, {
+          ...existingBoard,
+          last: tick.last,
+          open: tick.open ?? existingBoard.open,
+          high: tick.high ?? existingBoard.high,
+          low: tick.low ?? existingBoard.low,
+          delta: tick.delta,
+          pct: tick.pct,
+          volume: tick.volume > 0 ? tick.volume : existingBoard.volume,
+          value_bil: tick.value_bil ?? existingBoard.value_bil,
+          time: tick.time,
+          tradeDate: tick.tradeDate,
+          liveSource: 'SSI_WS',
+        });
+      }
+
+      let barsMap = this.minuteBars.get(tSym);
+      if (!barsMap) {
+        barsMap = new Map();
+        this.minuteBars.set(tSym, barsMap);
+      }
+      const existingBar = barsMap.get(minuteKey);
+      if (existingBar) {
+        existingBar.high = Math.max(existingBar.high, tick.last);
+        existingBar.low = Math.min(existingBar.low, tick.last);
+        existingBar.close = tick.last;
+        if (deltaVol > 0) existingBar.volume += deltaVol;
+      } else {
+        barsMap.set(minuteKey, {
+          t: minuteUnix,
+          date: parts.dateStr,
+          time: parts.hm,
+          datetime: minuteKey,
+          open: tick.last,
+          high: tick.last,
+          low: tick.last,
+          close: tick.last,
+          volume: deltaVol > 0 ? deltaVol : parsed.lastVol ?? 0,
+        });
+      }
+    }
+
+    if (Object.keys(emitted).length > 0) {
+      this.emitTicks(emitted);
+    }
+  }
+
   private parseDictTick(item: Record<string, any>) {
     const sym = String(item.stockSymbol || item.indexId || item.sym || '').toUpperCase().trim();
     if (!sym) return;
@@ -1314,7 +1443,7 @@ export class SSIWebSocketManager {
     if (rawLast === null || rawLast === undefined) return;
 
     const lastF = Number(rawLast);
-    if (!Number.isFinite(lastF)) return;
+    if (!Number.isFinite(lastF) || lastF <= 0) return;
     const lastVal = lastF >= 500 && !isIdx ? lastF / div : lastF;
     if (isIdx && lastVal < 50) return;
 
@@ -1329,7 +1458,6 @@ export class SSIWebSocketManager {
     if (refVal === null) refVal = prev?.ref ?? null;
     const delta = refVal && refVal > 0 ? lastVal - refVal : 0;
     const pct = refVal && refVal > 0 ? (delta / refVal) * 100 : 0;
-    const parts = vnNowParts();
 
     let valueBil = prev?.value_bil;
     if (rawVal !== null && rawVal !== undefined && Number.isFinite(Number(rawVal))) {
@@ -1339,7 +1467,7 @@ export class SSIWebSocketManager {
       }
     }
 
-    const tick: LiveTick = {
+    this.recordRealtimeTick({
       symbol: sym,
       last: lastVal,
       ref: refVal,
@@ -1350,62 +1478,7 @@ export class SSIWebSocketManager {
           ? Number(rawVol)
           : prev?.volume ?? 0,
       value_bil: valueBil,
-      time: parts.hms,
-    };
-
-    if (parts.dateStr !== this.barDate) {
-      this.minuteBars.clear();
-      this.barDate = parts.dateStr;
-    }
-
-    const minuteKey = `${parts.dateStr} ${parts.hm}`;
-    const minuteUnix = Math.floor(Date.now() / 60_000) * 60;
-    const targets = new Set([sym, ...(WS_INDEX_CANONICAL_MIRROR[sym] || [])]);
-
-    const emitted: Record<string, LiveTick> = {};
-    for (const tSym of targets) {
-      const mirroredTick = { ...tick, symbol: tSym };
-      this.liveTicks.set(tSym, mirroredTick);
-      emitted[tSym] = mirroredTick;
-      const existingBoard = this.liveBoard.get(tSym);
-      if (existingBoard) {
-        this.liveBoard.set(tSym, {
-          ...existingBoard,
-          last: tick.last,
-          delta: tick.delta,
-          pct: tick.pct,
-          volume: tick.volume > 0 ? tick.volume : existingBoard.volume,
-          value_bil: tick.value_bil ?? existingBoard.value_bil,
-          time: tick.time,
-        });
-      }
-
-      let barsMap = this.minuteBars.get(tSym);
-      if (!barsMap) {
-        barsMap = new Map();
-        this.minuteBars.set(tSym, barsMap);
-      }
-      const existingBar = barsMap.get(minuteKey);
-      if (existingBar) {
-        existingBar.high = Math.max(existingBar.high, tick.last);
-        existingBar.low = Math.min(existingBar.low, tick.last);
-        existingBar.close = tick.last;
-        if (tick.volume > 0) existingBar.volume = tick.volume;
-      } else {
-        barsMap.set(minuteKey, {
-          t: minuteUnix,
-          date: parts.dateStr,
-          time: parts.hm,
-          datetime: minuteKey,
-          open: tick.last,
-          high: tick.last,
-          low: tick.last,
-          close: tick.last,
-          volume: tick.volume,
-        });
-      }
-    }
-    this.emitTicks(emitted);
+    });
   }
 
   async refreshBoardNow(forceRefresh = false): Promise<Record<string, LiveTick>> {
@@ -1419,21 +1492,20 @@ export class SSIWebSocketManager {
       const changedTicks: Record<string, LiveTick> = {};
       this.liveBoard.clear();
       for (const [sym, item] of Object.entries(res.board)) {
+        const ssiWsTick = this.ssiWsTicks.get(sym);
         const prevTick = this.liveTicks.get(sym);
-        const wsTick = isVnMarketHours() ? prevTick : undefined;
         let finalTick: LiveTick;
-        if (wsTick && res.mode === 'eod') {
+        // NEVER overwrite a real-time SSI WS tick with stale EOD fallback data
+        if (ssiWsTick && (res.mode === 'eod' || isVnMarketHours())) {
           finalTick = {
             ...item,
-            last: wsTick.last,
-            delta: wsTick.delta,
-            pct: wsTick.pct,
-            volume: wsTick.volume > 0 ? wsTick.volume : item.volume,
-            time: wsTick.time,
+            ...ssiWsTick,
+            value_bil: ssiWsTick.value_bil ?? item.value_bil,
+            liveSource: 'SSI_WS',
           };
           this.liveBoard.set(sym, finalTick);
         } else {
-          finalTick = item;
+          finalTick = { ...item, tradeDate: res.tradeDate, liveSource: 'BOARD' };
           this.liveBoard.set(sym, finalTick);
           this.liveTicks.set(sym, { ...finalTick });
         }
@@ -1449,7 +1521,7 @@ export class SSIWebSocketManager {
       if (Object.keys(changedTicks).length > 0) {
         this.emitTicks(changedTicks);
       }
-      this.emitSync('board', res.syncTime, res.source);
+      this.emitSync('board', res.syncTime, this.ssiWsTicks.size > 0 ? 'SSI' : res.source);
     }
     return this.getLiveBoard();
   }
@@ -1544,6 +1616,27 @@ export class SSIWebSocketManager {
     return out;
   }
 
+  /**
+   * Returns ONLY ticks received directly from the real-time SSI WebSocket stream (`MAIN|S#...`).
+   */
+  getLiveWsSnapshot(symbols?: string[]): Record<string, LiveTick> {
+    const out: Record<string, LiveTick> = {};
+    if (!symbols) {
+      for (const [k, v] of this.ssiWsTicks.entries()) out[k] = { ...v };
+      return out;
+    }
+    for (const s of symbols) {
+      const u = s.toUpperCase().trim();
+      const v = this.ssiWsTicks.get(u);
+      if (v) out[u] = { ...v };
+    }
+    return out;
+  }
+
+  getLiveWsTickCount(): number {
+    return this.ssiWsTicks.size;
+  }
+
   getMinuteBars(symbol: string): OhlcvBar[] {
     const symU = symbol.toUpperCase().trim();
     if (this.barDate !== vnTodayStr()) return [];
@@ -1559,15 +1652,15 @@ export function getSsiWsManager(): SSIWebSocketManager {
   if (!singletonWsMgr) {
     singletonWsMgr = new SSIWebSocketManager();
     singletonWsMgr.start([...ALL_MAIN_INDICES]);
-    // Warm up unified 3-exchange SSI-classified catalog and subscribe HOSE symbols automatically
+    // Warm up unified 3-exchange SSI-classified catalog and subscribe ALL HOSE + HNX + UPCOM symbols to SSI WS
     fetchFullStockCatalog()
       .then((catalog) => {
-        const hoseSyms = selectCatalogSymbols(catalog.stocks, {
-          exchange: 'HOSE',
+        const allSyms = selectCatalogSymbols(catalog.stocks, {
+          exchange: 'ALL',
           excludePenny: false,
         });
-        if (hoseSyms.length) {
-          singletonWsMgr?.subscribe(hoseSyms);
+        if (allSyms.length) {
+          singletonWsMgr?.subscribe(allSyms);
         }
       })
       .catch(() => {});

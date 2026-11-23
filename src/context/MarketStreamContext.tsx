@@ -13,6 +13,7 @@ import type { LiveTickDto } from '../utils/livePatch';
 export interface MarketStatusDto {
   connected: boolean;
   upstreamSsiConnected: boolean;
+  ssiWsTickCount?: number;
   hoseCount: number;
   hnxCount: number;
   upcomCount: number;
@@ -50,6 +51,7 @@ interface MarketStreamContextValue {
 const DEFAULT_STATUS: MarketStatusDto = {
   connected: false,
   upstreamSsiConnected: false,
+  ssiWsTickCount: 0,
   hoseCount: 0,
   hnxCount: 0,
   upcomCount: 0,
@@ -157,6 +159,7 @@ export const MarketStreamProvider: React.FC<{ children: React.ReactNode }> = ({ 
             ...prev,
             connected: Boolean(json.connected),
             upstreamSsiConnected: Boolean(json.upstreamSsiConnected),
+            ssiWsTickCount: Number(json.ssiWsTickCount || 0),
             hoseCount: Number(json.hoseCount || 0),
             hnxCount: Number(json.hnxCount || 0),
             upcomCount: Number(json.upcomCount || 0),
@@ -236,6 +239,10 @@ export const MarketStreamProvider: React.FC<{ children: React.ReactNode }> = ({ 
               ...prev,
               connected: Boolean(s.connected),
               upstreamSsiConnected: Boolean(s.upstreamSsiConnected),
+              ssiWsTickCount:
+                typeof s.ssiWsTickCount === 'number'
+                  ? s.ssiWsTickCount
+                  : prev.ssiWsTickCount,
               hoseCount: Number(s.hoseCount || prev.hoseCount),
               hnxCount: Number(s.hnxCount || prev.hnxCount),
               upcomCount: Number(s.upcomCount || prev.upcomCount),
@@ -259,7 +266,8 @@ export const MarketStreamProvider: React.FC<{ children: React.ReactNode }> = ({ 
                 prev.last !== tick.last ||
                 prev.volume !== tick.volume ||
                 prev.value_bil !== tick.value_bil ||
-                prev.pct !== tick.pct
+                prev.pct !== tick.pct ||
+                prev.liveSource !== tick.liveSource
               ) {
                 ticksRef.current[sym] = tick;
                 changed = true;
