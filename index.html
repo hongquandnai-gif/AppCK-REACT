@@ -6,15 +6,30 @@
     <title>V11 PRO - Phân Tích Cổ Phiếu & SSI WebSocket</title>
     <meta
       name="description"
-      content="Hệ thống phân tích định lượng Minervini, VCP, dòng tiền ngành, bản đồ nhiệt HOSE, danh mục và backtest chiến lược Hybrid kết nối dữ liệu SSI Realtime."
+      content="Hệ thống phân tích định lượng Minervini, VCP, dòng tiền ngành, bản đồ nhiệt HOSE, giao dịch nước ngoài, danh mục và backtest chiến lược Hybrid kết nối dữ liệu SSI Realtime."
     />
     <meta property="og:title" content="V11 PRO - Phân Tích Cổ Phiếu & SSI WebSocket" />
     <meta
       property="og:description"
-      content="Hệ thống phân tích định lượng Minervini, VCP, dòng tiền ngành, bản đồ nhiệt HOSE, danh mục và backtest chiến lược Hybrid kết nối dữ liệu SSI Realtime."
+      content="Hệ thống phân tích định lượng Minervini, VCP, dòng tiền ngành, bản đồ nhiệt HOSE, giao dịch nước ngoài, danh mục và backtest chiến lược Hybrid kết nối dữ liệu SSI Realtime."
     />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          if (localStorage.getItem('v11_pro_theme') === 'dark') {
+            document.documentElement.classList.add('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
-  <body class="bg-[#f1f5f9] text-[#0f172a] antialiased">
+  <body class="bg-slate-50 text-slate-900 dark:bg-[#0b1120] dark:text-slate-100 antialiased selection:bg-sky-500/20 selection:text-sky-900 dark:selection:text-sky-200">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

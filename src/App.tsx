@@ -1,5 +1,17 @@
 import React, { useEffect, useState } from 'react';
+import {
+  BarChart3,
+  Briefcase,
+  CandlestickChart,
+  Compass,
+  Crosshair,
+  Globe,
+  Moon,
+  Radio,
+  Sun,
+} from 'lucide-react';
 import { MarketStreamProvider, useMarketStream } from './context/MarketStreamContext';
+import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { MarketOverviewWorkspace } from './workspaces/MarketOverviewWorkspace';
 import { SectorFlowWorkspace } from './workspaces/SectorFlowWorkspace';
 import { BreakoutScreenerWorkspace } from './workspaces/BreakoutScreenerWorkspace';
@@ -7,11 +19,11 @@ import { ChartAnalysisWorkspace } from './workspaces/ChartAnalysisWorkspace';
 import { PortfolioBacktestWorkspace } from './workspaces/PortfolioBacktestWorkspace';
 
 const WORKSPACES = [
-  { id: 'market', label: '🌐 Toàn Cảnh Thị Trường' },
-  { id: 'sector', label: '🧭 Sóng Ngành & Dòng Tiền' },
-  { id: 'screener', label: '🎯 Lọc Cổ Phiếu Đột Phá' },
-  { id: 'chart', label: '📈 Phân Tích Biểu Đồ' },
-  { id: 'portfolio', label: '💼 Danh Mục & Backtest' },
+  { id: 'market', label: 'Toàn cảnh', icon: Globe },
+  { id: 'sector', label: 'Sóng ngành', icon: Compass },
+  { id: 'screener', label: 'Lọc đột phá', icon: Crosshair },
+  { id: 'chart', label: 'Biểu đồ', icon: CandlestickChart },
+  { id: 'portfolio', label: 'Danh mục', icon: Briefcase },
 ] as const;
 
 type WorkspaceId = (typeof WORKSPACES)[number]['id'];
@@ -26,6 +38,7 @@ function AppShell() {
     portfolio: false,
   });
 
+  const { isDark, toggleTheme } = useTheme();
   const { wsConnected, upstreamSsiConnected, liveAuto, setLiveAuto, status, catalog } =
     useMarketStream();
 
@@ -50,87 +63,143 @@ function AppShell() {
     ? catalog.industries.filter((g) => g !== 'Tất cả ngành' && g !== 'Chỉ số').length
     : 0;
 
-  const wsBadgeLabel = upstreamSsiConnected
-    ? '● SSI WS Live'
+  const isStreamUp = upstreamSsiConnected || wsConnected;
+  const wsStatusLabel = upstreamSsiConnected
+    ? 'SSI WS Live'
     : wsConnected
-    ? '● WS Live'
-    : '● WS Đang kết nối';
-
-  const wsBadgeClass =
-    upstreamSsiConnected || wsConnected ? 'text-[#34d399]' : 'text-[#fbbf24]';
+    ? 'WS Live'
+    : 'WS Đang kết nối';
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] text-[#0f172a]">
-      <div className="max-w-[98.5%] mx-auto px-2 sm:px-3 pt-3 pb-10">
-        {/* V11 PRO Header */}
-        <header
-          className="rounded-[10px] px-5 py-3 flex flex-wrap justify-between items-center gap-2 mb-2.5 shadow-sm"
-          style={{ background: 'linear-gradient(90deg, #0f172a 0%, #1e293b 100%)' }}
-        >
-          <div className="flex flex-wrap items-baseline gap-2.5">
-            <h1 className="text-[#38bdf8] text-[18px] font-extrabold tracking-wide m-0">
-              📊 V11 PRO
-            </h1>
-            <span className="text-[#94a3b8] text-[12px] font-medium">
-              Hệ Thống Phân Tích Định Lượng Minervini &amp; Toàn Thị Trường Việt Nam
+    <div className="min-h-screen bg-slate-50 dark:bg-[#0b1120] text-slate-900 dark:text-slate-100 transition-colors">
+      {/* Compact 1-row, 3-zone Top Header */}
+      <header className="sticky top-0 z-30 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
+        <div className="max-w-[1600px] mx-auto px-3 sm:px-5 h-14 flex items-center justify-between gap-3">
+          {/* Zone 1: Brand */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-sky-600 dark:bg-sky-500 text-white dark:text-slate-950 flex items-center justify-center shrink-0">
+              <BarChart3 className="w-4 h-4" strokeWidth={2.25} />
+            </div>
+            <span className="text-[15.5px] font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
+              V11 PRO
             </span>
           </div>
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] font-semibold tabular-nums">
-            <span className={wsBadgeClass}>{wsBadgeLabel}</span>
-            <span className="text-slate-600">·</span>
-            <span className="text-slate-200">
+
+          {/* Zone 2: Primary Horizontal Workspace Navigation */}
+          <nav
+            aria-label="Điều hướng chính"
+            className="flex items-center gap-1 overflow-x-auto no-scrollbar h-full"
+          >
+            {WORKSPACES.map((ws) => {
+              const isActive = activeWs === ws.id;
+              const Icon = ws.icon;
+              return (
+                <button
+                  key={ws.id}
+                  type="button"
+                  onClick={() => handleSelectWs(ws.id)}
+                  className={`relative inline-flex items-center gap-1.5 h-full px-3 text-[13px] whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                    isActive
+                      ? 'text-sky-600 dark:text-sky-400 font-semibold'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 font-medium'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" strokeWidth={1.85} />
+                  <span>{ws.label}</span>
+                  {isActive && (
+                    <span className="absolute inset-x-2 bottom-0 h-[2px] bg-sky-600 dark:bg-sky-400 rounded-full" />
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Zone 3: Live Stream Toggle + Light/Dark Switch */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={liveAuto}
+              onClick={() => setLiveAuto(!liveAuto)}
+              title="Bật/tắt cập nhật trực tiếp theo WebSocket SSI"
+              className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border text-[12px] font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                liveAuto
+                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/70 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5 shrink-0" strokeWidth={2} />
+              <span className="hidden sm:inline">WS Live</span>
+              <span
+                className={`w-2 h-2 rounded-full shrink-0 ${
+                  liveAuto
+                    ? isStreamUp
+                      ? 'bg-emerald-500'
+                      : 'bg-amber-500'
+                    : 'bg-slate-400 dark:bg-slate-600'
+                }`}
+              />
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label={isDark ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
+              title={isDark ? 'Giao diện Sáng' : 'Giao diện Tối'}
+              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white transition-colors cursor-pointer shrink-0"
+            >
+              {isDark ? (
+                <Sun className="w-4 h-4" strokeWidth={1.85} />
+              ) : (
+                <Moon className="w-4 h-4" strokeWidth={1.85} />
+              )}
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Container */}
+      <div className="max-w-[1600px] mx-auto px-3 sm:px-5 pt-3 pb-10">
+        {/* Quiet Unboxed Inline Context Strip */}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pb-2.5 mb-3 border-b border-slate-200/80 dark:border-slate-800/80 text-[12px] text-slate-500 dark:text-slate-400">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums">
+            <span className="inline-flex items-center gap-1.5 font-semibold">
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isStreamUp ? 'bg-emerald-500' : 'bg-amber-500'
+                }`}
+              />
+              <span
+                className={
+                  isStreamUp
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-amber-600 dark:text-amber-400'
+                }
+              >
+                {wsStatusLabel}
+              </span>
+            </span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
+            <span className="text-slate-700 dark:text-slate-300 font-medium">
               {totalCount > 0
                 ? `${totalCount.toLocaleString('en-US')} mã (HOSE ${hoseCount} · HNX ${hnxCount} · UPCOM ${upcomCount})`
                 : 'Đang tải danh mục 3 sàn...'}
             </span>
             {sectorCount > 0 && (
               <>
-                <span className="text-slate-600">·</span>
-                <span className="text-sky-300">SSI ICB ({sectorCount} ngành)</span>
-              </>
-            )}
-            {status.vnClock && (
-              <>
-                <span className="text-slate-600">·</span>
-                <span className="text-slate-300">{status.vnClock}</span>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                <span className="text-sky-600 dark:text-sky-400 font-medium">
+                  SSI ICB ({sectorCount} ngành)
+                </span>
               </>
             )}
           </div>
-        </header>
-
-        {/* Flat 5 Workspace Navigation Bar + Realtime WS Stream Toggle */}
-        <nav className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 items-center mb-3">
-          {WORKSPACES.map((ws) => {
-            const isActive = activeWs === ws.id;
-            return (
-              <button
-                key={ws.id}
-                type="button"
-                onClick={() => handleSelectWs(ws.id)}
-                className={`w-full px-3 py-2 rounded-lg text-[13px] transition-colors cursor-pointer truncate ${
-                  isActive
-                    ? 'bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold shadow-xs border border-[#0284c7]'
-                    : 'bg-white hover:bg-slate-200 text-slate-700 hover:text-slate-900 font-semibold border border-slate-300'
-                }`}
-              >
-                {ws.label}
-              </button>
-            );
-          })}
-
-          <label
-            className="flex items-center justify-center gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-bold text-slate-700 cursor-pointer select-none"
-            title="Cập nhật trực tiếp theo WebSocket không làm gián đoạn thao tác"
-          >
-            <input
-              type="checkbox"
-              checked={liveAuto}
-              onChange={(e) => setLiveAuto(e.target.checked)}
-              className="w-4 h-4 accent-[#0284c7]"
-            />
-            <span>⚡ Cập nhật WS Live</span>
-          </label>
-        </nav>
+          {status.vnClock && (
+            <div className="font-mono text-[11.5px] font-medium text-slate-500 dark:text-slate-400 tabular-nums">
+              {status.vnClock}
+            </div>
+          )}
+        </div>
 
         {/* Persistent Workspaces — switching tabs never interrupts scans, charts, or inputs */}
         <main>
@@ -167,8 +236,10 @@ function AppShell() {
 
 export default function App() {
   return (
-    <MarketStreamProvider>
-      <AppShell />
-    </MarketStreamProvider>
+    <ThemeProvider>
+      <MarketStreamProvider>
+        <AppShell />
+      </MarketStreamProvider>
+    </ThemeProvider>
   );
 }

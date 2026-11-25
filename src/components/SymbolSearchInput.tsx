@@ -22,10 +22,10 @@ function stripDiacritics(str: string): string {
 }
 
 const EXCHANGE_TEXT_COLOR: Record<StockCatalogItem['exchange'], string> = {
-  HOSE: 'text-[#0284c7]',
-  HNX: 'text-emerald-700',
-  UPCOM: 'text-amber-700',
-  INDEX: 'text-purple-700',
+  HOSE: 'text-sky-600 dark:text-sky-400',
+  HNX: 'text-emerald-600 dark:text-emerald-400',
+  UPCOM: 'text-amber-600 dark:text-amber-400',
+  INDEX: 'text-violet-600 dark:text-violet-400',
 };
 
 export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
@@ -143,7 +143,7 @@ export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
   return (
     <div ref={containerRef} className={`relative ${className}`}>
       <div className="relative flex items-center">
-        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
+        <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-2.5 pointer-events-none" />
         <input
           ref={inputRef}
           type="text"
@@ -162,7 +162,7 @@ export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
           placeholder={placeholder}
           autoComplete="off"
           spellCheck={false}
-          className="w-full bg-white border border-slate-300 rounded-lg pl-8 pr-7 py-1.5 text-[13px] text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-[#0284c7]/30 focus:border-[#0284c7]"
+          className="w-full h-9 bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-lg pl-8 pr-7 text-[13px] text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-semibold font-mono focus:outline-none focus:ring-2 focus:ring-sky-500/25 focus:border-sky-500 dark:focus:border-sky-400 transition-colors"
         />
         {query && (
           <button
@@ -175,7 +175,7 @@ export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
               setOpen(true);
               inputRef.current?.focus();
             }}
-            className="absolute right-2 text-slate-400 hover:text-slate-600 cursor-pointer"
+            className="absolute right-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -183,7 +183,7 @@ export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
       </div>
 
       {open && (
-        <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-300 rounded-lg shadow-lg z-40 max-h-72 overflow-y-auto min-w-[270px]">
+        <div className="absolute left-0 right-0 mt-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg z-40 max-h-72 overflow-y-auto min-w-[270px]">
           {showCustomOption && (
             <button
               type="button"
@@ -191,19 +191,21 @@ export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
                 e.preventDefault();
                 commitSymbol(trimmedUpper);
               }}
-              className={`w-full text-left px-3 py-2 text-[12.5px] border-b border-slate-100 flex items-center justify-between cursor-pointer ${
-                highlightIdx === 0 ? 'bg-sky-50 text-[#0284c7]' : 'hover:bg-slate-50 text-slate-700'
+              className={`w-full text-left px-3 py-2 text-[12.5px] border-b border-slate-100 dark:border-slate-800 flex items-center justify-between cursor-pointer ${
+                highlightIdx === 0
+                  ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-600 dark:text-sky-400'
+                  : 'hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200'
               }`}
             >
               <span>
-                Tra cứu tự do mã <strong className="font-bold">{trimmedUpper}</strong>
+                Tra cứu tự do mã <strong className="font-mono font-bold">{trimmedUpper}</strong>
               </span>
-              <span className="text-[11px] text-slate-400">Enter ↵</span>
+              <span className="text-[11px] text-slate-400 font-mono">Enter</span>
             </button>
           )}
 
           {matches.length === 0 && !showCustomOption && (
-            <div className="px-3 py-3 text-[12.5px] text-slate-500">
+            <div className="px-3 py-3 text-[12.5px] text-slate-500 dark:text-slate-400">
               Không tìm thấy mã phù hợp. Bạn có thể nhập mã trực tiếp rồi nhấn Enter.
             </div>
           )}
@@ -221,25 +223,35 @@ export const SymbolSearchInput: React.FC<SymbolSearchInputProps> = ({
                   commitSymbol(item.symbol);
                 }}
                 onMouseEnter={() => setHighlightIdx(optionIndex)}
-                className={`w-full text-left px-3 py-1.5 border-b border-slate-100 last:border-b-0 flex items-center justify-between gap-2 cursor-pointer transition-colors ${
-                  isHighlighted ? 'bg-sky-50' : isSelected ? 'bg-slate-50' : 'hover:bg-slate-50'
+                className={`w-full text-left px-3 py-2 border-b border-slate-100 dark:border-slate-800/80 last:border-b-0 flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                  isHighlighted
+                    ? 'bg-sky-50 dark:bg-sky-950/50'
+                    : isSelected
+                    ? 'bg-slate-50 dark:bg-slate-800/70'
+                    : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
                 }`}
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 text-[12.5px]">
-                    <span className="font-bold text-slate-900 tabular-nums">{item.symbol}</span>
+                    <span className="font-bold font-mono text-slate-900 dark:text-slate-100 tabular-nums">
+                      {item.symbol}
+                    </span>
                     <span
-                      className={`text-[11px] font-bold ${
-                        EXCHANGE_TEXT_COLOR[item.exchange] || 'text-slate-500'
+                      className={`text-[11px] font-semibold ${
+                        EXCHANGE_TEXT_COLOR[item.exchange] || 'text-slate-500 dark:text-slate-400'
                       }`}
                     >
                       {item.exchange === 'INDEX' ? 'CHỈ SỐ' : item.exchange}
                     </span>
-                    <span className="text-slate-300">·</span>
-                    <span className="text-[11.5px] text-slate-500 truncate">{item.industry}</span>
+                    <span className="text-slate-300 dark:text-slate-600">·</span>
+                    <span className="text-[11.5px] text-slate-500 dark:text-slate-400 truncate">
+                      {item.industry}
+                    </span>
                   </div>
                   {item.companyName && item.companyName !== item.symbol && (
-                    <div className="text-[11.5px] text-slate-500 truncate">{item.companyName}</div>
+                    <div className="text-[11.5px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                      {item.companyName}
+                    </div>
                   )}
                 </div>
               </button>

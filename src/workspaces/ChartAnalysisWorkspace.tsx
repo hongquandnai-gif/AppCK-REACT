@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CandlestickChart, RefreshCw, Zap } from 'lucide-react';
 import {
   ALL_MAIN_INDICES,
   HARDCODED_HOSE_INDUSTRIES_MAPPING,
@@ -10,12 +11,16 @@ import { SymbolSearchInput } from '../components/SymbolSearchInput';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
 import { patchOhlcBarsWithTick } from '../utils/livePatch';
 import {
+  ErrorBanner,
   FieldLabel,
   LoadingBar,
   PrimaryButton,
   SecondaryButton,
+  SectionCard,
   SubTabs,
   inputCls,
+  tableHeadCls,
+  tableRowCls,
 } from '../components/UiPrimitives';
 import type { StockCatalogItem } from '../types/catalog';
 import {
@@ -149,7 +154,6 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     loadEod(false);
   }, [subTab, loadEod]);
 
-  // Patch latest EOD candle (or append today's live candle) from SSI WS ticks without disturbing Plotly zoom/hover
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'eod' || hEnd < today) return;
     const sym = symSel.trim().toUpperCase();
@@ -157,7 +161,6 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     if (!tick) return;
     setEodData((prev: any) => {
       if (!prev || prev.empty || prev.symbol !== sym || !prev.bars?.length) return prev;
-      // For weekly/monthly bars, update current candle in-place without appending a daily candle
       const effectiveTick = hTf === 'D' ? tick : { ...tick, tradeDate: undefined };
       const nextBars = patchOhlcBarsWithTick(prev.bars, effectiveTick, {
         isIntraday: false,
@@ -275,7 +278,6 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     loadIntraday(false, false);
   }, [subTab, loadIntraday]);
 
-  // Patch latest intraday candle (or roll into next timeframe bucket) from SSI WS ticks with zero flicker
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'intraday' || inDate < today) return;
     const sym = inSym.trim().toUpperCase();
@@ -307,7 +309,6 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
     });
   }, [tickVersion, ticks, inSym, inTf, liveAuto, isActive, subTab, inDate, today]);
 
-  // Silently reconcile new intraday minute bars on WS board sync events
   const lastIntraSyncRef = useRef(syncVersion.board);
   useEffect(() => {
     if (syncVersion.board === lastIntraSyncRef.current) return;
@@ -324,14 +325,22 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
         active={subTab}
         onChange={(id) => setSubTab(id as any)}
         tabs={[
-          { id: 'eod', label: '📉 Biểu Đồ Kỹ Thuật (EOD)' },
-          { id: 'intraday', label: '⚡ Khớp Lệnh Trong Phiên & Bảng Giá' },
+          {
+            id: 'eod',
+            label: 'Biểu Đồ Kỹ Thuật (EOD)',
+            icon: <CandlestickChart className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'intraday',
+            label: 'Khớp Lệnh Trong Phiên & Bảng Giá',
+            icon: <Zap className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
         ]}
       />
 
       {subTab === 'eod' && (
-        <div className="space-y-3">
-          <div className="bg-white border border-slate-200 rounded-[10px] p-3 space-y-3">
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5 space-y-3">
             <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
               <div className="md:col-span-2">
                 <FieldLabel label="Sàn giao dịch">
@@ -420,9 +429,11 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end pt-2 border-t border-slate-100 dark:border-slate-800">
               <div className="md:col-span-5">
-                <div className="text-[12px] font-bold text-slate-600 mb-1">Đường MA</div>
+                <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Đường MA
+                </div>
                 <div className="flex flex-wrap gap-1.5">
                   {[10, 20, 50, 100, 200].map((w) => {
                     const active = maSel.includes(w);
@@ -431,10 +442,10 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                         key={w}
                         type="button"
                         onClick={() => toggleMa(w)}
-                        className={`px-2.5 py-1 rounded-md text-[12px] font-bold border cursor-pointer ${
+                        className={`h-8 px-2.5 rounded-lg text-[12px] font-semibold font-mono border cursor-pointer transition-colors ${
                           active
                             ? 'text-white border-transparent'
-                            : 'bg-slate-50 text-slate-600 border-slate-300'
+                            : 'bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                         style={active ? { backgroundColor: MA_COLORS[w] } : undefined}
                       >
@@ -455,91 +466,100 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                   />
                 </FieldLabel>
               </div>
-              <div className="md:col-span-2 flex items-center h-[36px]">
-                <label className="inline-flex items-center gap-2 text-[13px] font-bold text-slate-700 cursor-pointer">
+              <div className="md:col-span-2 flex items-center h-9">
+                <label className="inline-flex items-center gap-2 text-[13px] font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showMaVol}
                     onChange={(e) => setShowMaVol(e.target.checked)}
-                    className="w-4 h-4 accent-[#0284c7]"
+                    className="w-4 h-4 rounded accent-sky-600"
                   />
                   MA20 Vol
                 </label>
               </div>
-              <div className="md:col-span-2 flex items-center h-[36px]">
-                <label className="inline-flex items-center gap-2 text-[13px] font-bold text-slate-700 cursor-pointer">
+              <div className="md:col-span-2 flex items-center h-9">
+                <label className="inline-flex items-center gap-2 text-[13px] font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={showAth}
                     onChange={(e) => setShowAth(e.target.checked)}
-                    className="w-4 h-4 accent-[#0284c7]"
+                    className="w-4 h-4 rounded accent-sky-600"
                   />
                   Đỉnh LS (ATH)
                 </label>
               </div>
             </div>
-          </div>
+          </SectionCard>
 
           {eodLoading && <LoadingBar text={`Đang tải dữ liệu biểu đồ ${symSel}...`} />}
 
           {eodError && (
-            <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg text-red-900 text-[13px] flex flex-wrap items-center justify-between gap-2">
-              <span>Lỗi tải dữ liệu biểu đồ {symSel}: {eodError}</span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <ErrorBanner
+                message={`Lỗi tải dữ liệu biểu đồ ${symSel}: ${eodError}`}
+                className="flex-1"
+              />
               <SecondaryButton onClick={() => loadEod(false)}>Thử lại</SecondaryButton>
             </div>
           )}
 
           {!eodLoading && !eodError && eodData?.empty && (
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm flex flex-wrap items-center justify-between gap-2">
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 rounded-xl text-amber-900 dark:text-amber-200 text-[13px] flex flex-wrap items-center justify-between gap-2">
               <span>
-                Không có dữ liệu giao dịch cho mã <strong>{symSel}</strong> trong khoảng ngày đã chọn.
-                Hãy kiểm tra lại mã hoặc nới rộng khoảng thời gian.
+                Không có dữ liệu giao dịch cho mã <strong className="font-mono">{symSel}</strong> trong
+                khoảng ngày đã chọn. Hãy kiểm tra lại mã hoặc nới rộng khoảng thời gian.
               </span>
               <SecondaryButton onClick={() => loadEod(false)}>Tải lại</SecondaryButton>
             </div>
           )}
 
           {eodData && !eodData.empty && (
-            <div className="space-y-1.5">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-600 px-1">
-                <strong className="text-slate-900">{eodData.symbol}</strong>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-500 dark:text-slate-400 px-1">
+                <strong className="font-mono text-slate-900 dark:text-slate-100">
+                  {eodData.symbol}
+                </strong>
                 {eodData.exchange && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="font-semibold text-[#0284c7]">
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="font-semibold text-sky-600 dark:text-sky-400">
                       {eodData.exchange === 'INDEX' ? 'Chỉ số' : eodData.exchange}
                     </span>
                   </>
                 )}
                 {eodData.companyName && eodData.companyName !== eodData.symbol && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="text-slate-700">{eodData.companyName}</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="text-slate-700 dark:text-slate-300">
+                      {eodData.companyName}
+                    </span>
                   </>
                 )}
                 {eodData.industry && (
                   <>
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span>{eodData.industry}</span>
                   </>
                 )}
                 {eodData.resolvedDateDisplay && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="tabular-nums">Phiên gần nhất: {eodData.resolvedDateDisplay}</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="tabular-nums">
+                      Phiên gần nhất: {eodData.resolvedDateDisplay}
+                    </span>
                   </>
                 )}
                 {eodData.source && (
                   <>
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span>Nguồn: {eodData.source}</span>
                   </>
                 )}
                 {eodData.liveWsActive && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="inline-flex items-center gap-1 font-semibold text-[#059669] tabular-nums">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="inline-flex items-center gap-1 font-semibold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                       SSI WS{eodData.liveTime ? ` (${eodData.liveTime})` : ''}
                     </span>
                   </>
@@ -562,87 +582,102 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
       )}
 
       {subTab === 'intraday' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-4">
-              <FieldLabel label="Mã CP / Chỉ số (3 sàn HOSE · HNX · UPCOM)">
-                <SymbolSearchInput
-                  value={inSym}
-                  onSelect={(s) => setInSym(s)}
-                  items={allCatalogItems}
-                  placeholder="Tìm hoặc nhập mã (VD: FPT, CEO, BSR...)"
-                />
-              </FieldLabel>
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-4">
+                <FieldLabel label="Mã CP / Chỉ số (3 sàn HOSE · HNX · UPCOM)">
+                  <SymbolSearchInput
+                    value={inSym}
+                    onSelect={(s) => setInSym(s)}
+                    items={allCatalogItems}
+                    placeholder="Tìm hoặc nhập mã (VD: FPT, CEO, BSR...)"
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <FieldLabel label="Ngày khớp lệnh">
+                  <input
+                    type="date"
+                    value={inDate}
+                    onChange={(e) => setInDate(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Khung nến">
+                  <select
+                    value={inTf}
+                    onChange={(e) => setInTf(e.target.value)}
+                    className={inputCls}
+                  >
+                    {['1', '5', '15', '30', '60'].map((m) => (
+                      <option key={m} value={m}>
+                        {m} phút
+                      </option>
+                    ))}
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <PrimaryButton
+                  onClick={() => loadIntraday(true, false)}
+                  loading={intraLoading}
+                  className="w-full"
+                >
+                  {!intraLoading && <RefreshCw className="w-3.5 h-3.5" />}
+                  Cập nhật
+                </PrimaryButton>
+              </div>
             </div>
-            <div className="md:col-span-3">
-              <FieldLabel label="Ngày khớp lệnh">
-                <input
-                  type="date"
-                  value={inDate}
-                  onChange={(e) => setInDate(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Khung nến">
-                <select value={inTf} onChange={(e) => setInTf(e.target.value)} className={inputCls}>
-                  {['1', '5', '15', '30', '60'].map((m) => (
-                    <option key={m} value={m}>
-                      {m} phút
-                    </option>
-                  ))}
-                </select>
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-3">
-              <PrimaryButton
-                onClick={() => loadIntraday(true, false)}
-                loading={intraLoading}
-                className="w-full"
-              >
-                🔄 Cập nhật
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
           {intraLoading && <LoadingBar text={`Đang tải dữ liệu khớp lệnh ${inSym}...`} />}
 
           {intraError && (
-            <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg text-red-900 text-[13px] flex flex-wrap items-center justify-between gap-2">
-              <span>Lỗi tải dữ liệu khớp lệnh {inSym}: {intraError}</span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <ErrorBanner
+                message={`Lỗi tải dữ liệu khớp lệnh ${inSym}: ${intraError}`}
+                className="flex-1"
+              />
               <SecondaryButton onClick={() => loadIntraday(true, false)}>Thử lại</SecondaryButton>
             </div>
           )}
 
           {!intraLoading && !intraError && intraData?.empty && (
-            <div className="p-4 bg-sky-50 border border-sky-200 rounded-lg text-sky-900 text-sm">
-              Không tìm thấy dữ liệu khớp lệnh hoặc dữ liệu EOD cho mã <strong>{inSym}</strong>.
+            <div className="p-4 bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800/60 rounded-xl text-sky-900 dark:text-sky-200 text-[13px]">
+              Không tìm thấy dữ liệu khớp lệnh hoặc dữ liệu EOD cho mã{' '}
+              <strong className="font-mono">{inSym}</strong>.
             </div>
           )}
 
           {intraData && !intraData.empty && (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-600 px-1">
-                <strong className="text-slate-900">{intraData.symbol}</strong>
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-500 dark:text-slate-400 px-1">
+                <strong className="font-mono text-slate-900 dark:text-slate-100">
+                  {intraData.symbol}
+                </strong>
                 {intraData.exchange && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="font-semibold text-[#0284c7]">
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="font-semibold text-sky-600 dark:text-sky-400">
                       {intraData.exchange === 'INDEX' ? 'Chỉ số' : intraData.exchange}
                     </span>
                   </>
                 )}
                 {intraData.companyName && intraData.companyName !== intraData.symbol && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="text-slate-700">{intraData.companyName}</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="text-slate-700 dark:text-slate-300">
+                      {intraData.companyName}
+                    </span>
                   </>
                 )}
                 {intraData.resolvedDateDisplay && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="tabular-nums font-semibold text-slate-800">
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="tabular-nums font-semibold text-slate-800 dark:text-slate-200">
                       {intraData.fallbackToDaily
                         ? `Dữ liệu EOD gần nhất đến ${intraData.resolvedDateDisplay}`
                         : `Phiên khớp lệnh: ${intraData.resolvedDateDisplay}`}
@@ -651,15 +686,15 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                 )}
                 {intraData.source && (
                   <>
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span>Nguồn: {intraData.source}</span>
                   </>
                 )}
                 {intraData.liveWsActive && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="inline-flex items-center gap-1 font-semibold text-[#059669] tabular-nums">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="inline-flex items-center gap-1 font-semibold font-mono text-emerald-600 dark:text-emerald-400 tabular-nums">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                       SSI WS{intraData.liveTime ? ` (${intraData.liveTime})` : ''}
                     </span>
                   </>
@@ -669,60 +704,67 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                   intraData.requestedDate &&
                   intraData.resolvedDate !== intraData.requestedDate && (
                     <>
-                      <span className="text-slate-300">·</span>
-                      <span className="text-amber-700">
+                      <span className="text-slate-300 dark:text-slate-700">·</span>
+                      <span className="text-amber-600 dark:text-amber-400">
                         Ngày {intraData.requestedDateDisplay} chưa có giao dịch, tự động hiển thị phiên gần nhất
                       </span>
                     </>
                   )}
                 {intraData.fallbackToDaily && (
                   <>
-                    <span className="text-slate-300">·</span>
-                    <span className="text-amber-700">
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span className="text-amber-600 dark:text-amber-400">
                       Chưa có nến theo phút, tự động hiển thị 30 phiên EOD gần nhất
                     </span>
                   </>
                 )}
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-                <div className="lg:col-span-4 bg-white border border-slate-200 rounded-[10px] p-2 overflow-auto max-h-[545px]">
-                  <table className="w-full text-[12.5px] border-collapse">
-                    <thead className="sticky top-0 bg-slate-50">
-                      <tr className="border-b border-slate-200 text-slate-600 text-right">
-                        <th className="py-1.5 px-2 text-left">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
+                <SectionCard className="lg:col-span-4 p-2 overflow-auto max-h-[545px]">
+                  <table className="w-full text-[12px] border-collapse">
+                    <thead className={tableHeadCls}>
+                      <tr className="text-right">
+                        <th className="py-2 px-2 text-left">
                           {intraData.fallbackToDaily ? 'Ngày' : 'Giờ'}
                         </th>
-                        <th className="py-1.5 px-1.5">Open</th>
-                        <th className="py-1.5 px-1.5">High</th>
-                        <th className="py-1.5 px-1.5">Low</th>
-                        <th className="py-1.5 px-1.5">Close</th>
-                        <th className="py-1.5 px-1.5">%</th>
-                        <th className="py-1.5 px-2">Volume</th>
+                        <th className="py-2 px-1.5">Open</th>
+                        <th className="py-2 px-1.5">High</th>
+                        <th className="py-2 px-1.5">Low</th>
+                        <th className="py-2 px-1.5">Close</th>
+                        <th className="py-2 px-1.5">%</th>
+                        <th className="py-2 px-2">Volume</th>
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-mono tabular-nums">
                       {[...intraData.bars].reverse().map((b: any, i: number) => (
-                        <tr
-                          key={`${b.time}_${i}`}
-                          className="border-b border-slate-100 hover:bg-slate-50 text-right tabular-nums"
-                        >
-                          <td className="py-1.5 px-2 text-left font-semibold text-slate-700">
+                        <tr key={`${b.time}_${i}`} className={`${tableRowCls} text-right`}>
+                          <td className="py-1.5 px-2 text-left font-semibold text-slate-700 dark:text-slate-300">
                             {b.time}
                           </td>
-                          <td className="py-1.5 px-1.5">{fmtNum(b.open, 2)}</td>
-                          <td className="py-1.5 px-1.5">{fmtNum(b.high, 2)}</td>
-                          <td className="py-1.5 px-1.5">{fmtNum(b.low, 2)}</td>
-                          <td className="py-1.5 px-1.5 font-semibold">{fmtNum(b.close, 2)}</td>
+                          <td className="py-1.5 px-1.5 text-slate-600 dark:text-slate-400">
+                            {fmtNum(b.open, 2)}
+                          </td>
+                          <td className="py-1.5 px-1.5 text-slate-600 dark:text-slate-400">
+                            {fmtNum(b.high, 2)}
+                          </td>
+                          <td className="py-1.5 px-1.5 text-slate-600 dark:text-slate-400">
+                            {fmtNum(b.low, 2)}
+                          </td>
+                          <td className="py-1.5 px-1.5 font-semibold text-slate-900 dark:text-slate-100">
+                            {fmtNum(b.close, 2)}
+                          </td>
                           <td className={`py-1.5 px-1.5 ${colorSignedClass(b.pct)}`}>
                             {fmtSigned(b.pct, 2, '%')}
                           </td>
-                          <td className="py-1.5 px-2">{fmtInt(b.volume)}</td>
+                          <td className="py-1.5 px-2 text-slate-600 dark:text-slate-300">
+                            {fmtInt(b.volume)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </SectionCard>
 
                 <div className="lg:col-span-8">
                   <DynamicOhlcChart
@@ -730,7 +772,9 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
                     bars={intraData.bars}
                     showVolume
                     height={460}
-                    uirevision={`intra_${intraData.symbol}_${inTf}_${intraData.fallbackToDaily ? 'd' : 'm'}`}
+                    uirevision={`intra_${intraData.symbol}_${inTf}_${
+                      intraData.fallbackToDaily ? 'd' : 'm'
+                    }`}
                   />
                 </div>
               </div>

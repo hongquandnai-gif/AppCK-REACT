@@ -897,9 +897,6 @@ app.get('/api/foreign-trading', async (req, res) => {
     ]);
 
     const wsSnap = requestedDate === today ? wsMgr.getLiveWsSnapshot() : {};
-    const wsHasForeign = Object.values(wsSnap).some(
-      (t) => (t.fBuyVol ?? 0) > 0 || (t.fSellVol ?? 0) > 0 || (t.fBuyValBil ?? 0) > 0 || (t.fSellValBil ?? 0) > 0
-    );
 
     // Organize index foreign records by date -> floor
     const byDateFloor = new Map<string, Partial<Record<'HOSE' | 'HNX' | 'UPCOM', ForeignRecord>>>();
@@ -911,16 +908,55 @@ app.get('/api/foreign-trading', async (req, res) => {
       byDateFloor.set(rec.tradingDate, bucket);
     }
 
+    const hasFloorActivity = (d: string): boolean => {
+      const bkt = byDateFloor.get(d);
+      if (!bkt) return false;
+      return targetFloors.some((fl) => {
+        const r = bkt[fl];
+        return Boolean(r && (r.buyValBil > 0 || r.sellValBil > 0 || r.buyVol > 0 || r.sellVol > 0));
+      });
+    };
+
+    const wsHasTargetForeign = Object.entries(wsSnap).some(([sym, t]) => {
+      const meta = catalog.stocks[sym];
+      const fl = t.exchange || (meta?.exchange !== 'INDEX' ? meta?.exchange : undefined);
+      if (!fl || !targetFloors.includes(fl)) return false;
+      return (t.fBuyVol ?? 0) > 0 || (t.fSellVol ?? 0) > 0 || (t.fBuyValBil ?? 0) > 0 || (t.fSellValBil ?? 0) > 0;
+    });
+
     const allDatesDesc = [...byDateFloor.keys()].sort((a, b) => b.localeCompare(a));
-    let resolvedDate = allDatesDesc[0] || requestedDate;
-    if (requestedDate === today && wsHasForeign && resolvedDate < today) {
+    const latestActiveDate = allDatesDesc.find((d) => hasFloorActivity(d));
+    let resolvedDate = latestActiveDate || allDatesDesc[0] || requestedDate;
+    if (requestedDate === today && wsHasTargetForeign && resolvedDate < today) {
       resolvedDate = today;
     }
 
-    const [rawStockRecs, boardResults] = await Promise.all([
+    const hasActiveStocksForFloors = (recs: ForeignRecord[]): boolean =>
+      recs.some((rec) => {
+        const meta = catalog.stocks[rec.code];
+        const fl = (meta?.exchange === 'HOSE' || meta?.exchange === 'HNX' || meta?.exchange === 'UPCOM'
+          ? meta.exchange
+          : rec.floor) as 'HOSE' | 'HNX' | 'UPCOM';
+        if (exchange !== 'ALL' && fl !== exchange) return false;
+        return rec.buyValBil > 0 || rec.sellValBil > 0 || rec.buyVol > 0 || rec.sellVol > 0;
+      });
+
+    let [rawStockRecs, boardResults] = await Promise.all([
       fetchForeignStocksByDate(resolvedDate, refresh),
       Promise.all(targetFloors.map((fl) => fetchExchangeBoardWithFallback(fl, resolvedDate, false))),
     ]);
+
+    let stockResolvedDate = resolvedDate;
+    if (!hasActiveStocksForFloors(rawStockRecs) && !(resolvedDate === today && wsHasTargetForeign)) {
+      for (const cand of allDatesDesc.filter((d) => d < resolvedDate).slice(0, 4)) {
+        const candRecs = await fetchForeignStocksByDate(cand, refresh);
+        if (hasActiveStocksForFloors(candRecs)) {
+          rawStockRecs = candRecs;
+          stockResolvedDate = cand;
+          break;
+        }
+      }
+    }
 
     const boardLookup: Record<string, LiveTick> = {};
     for (const br of boardResults) {
@@ -983,7 +1019,7 @@ app.get('/api/foreign-trading', async (req, res) => {
     // Overlay real-time SSI WS ticks (price, pct, AND live foreign buy/sell when trading today)
     let liveWsCount = 0;
     let latestWsTime = '';
-    if (resolvedDate === today) {
+    if (stockResolvedDate === today) {
       for (const [sym, wsTick] of Object.entries(wsSnap)) {
         const meta = catalog.stocks[sym];
         const fl = wsTick.exchange || (meta?.exchange !== 'INDEX' ? meta?.exchange : undefined);
@@ -1061,7 +1097,17 @@ app.get('/api/foreign-trading', async (req, res) => {
     const resolvedIdxBucket = byDateFloor.get(resolvedDate) || {};
     for (const fl of ['HOSE', 'HNX', 'UPCOM'] as const) {
       const rec = resolvedIdxBucket[fl];
-      if (rec) {
+      const flStocks = stockResolvedDate === resolvedDate ? activeStocks.filter((s) => s.exchange === fl) : [];
+      const sumBVal = flStocks.reduce((acc, s) => acc + s.buyValBil, 0);
+      const sumSVal = flStocks.reduce((acc, s) => acc + s.sellValBil, 0);
+      const sumBVol = flStocks.reduce((acc, s) => acc + s.buyVol, 0);
+      const sumSVol = flStocks.reduce((acc, s) => acc + s.sellVol, 0);
+      const useStockSum =
+        !rec ||
+        (resolvedDate === today &&
+          (sumBVal > rec.buyValBil || sumSVal > rec.sellValBil || sumBVol > rec.buyVol || sumSVol > rec.sellVol));
+
+      if (!useStockSum && rec) {
         perExchange[fl] = {
           buyValBil: Number(rec.buyValBil.toFixed(2)),
           sellValBil: Number(rec.sellValBil.toFixed(2)),
@@ -1071,11 +1117,10 @@ app.get('/api/foreign-trading', async (req, res) => {
           netVolMil: Number((rec.netVol / 1e6).toFixed(2)),
         };
       } else {
-        const flStocks = activeStocks.filter((s) => s.exchange === fl);
-        const bVal = flStocks.reduce((acc, s) => acc + s.buyValBil, 0);
-        const sVal = flStocks.reduce((acc, s) => acc + s.sellValBil, 0);
-        const bVol = flStocks.reduce((acc, s) => acc + s.buyVol, 0);
-        const sVol = flStocks.reduce((acc, s) => acc + s.sellVol, 0);
+        const bVal = Math.max(rec?.buyValBil ?? 0, sumBVal);
+        const sVal = Math.max(rec?.sellValBil ?? 0, sumSVal);
+        const bVol = Math.max(rec?.buyVol ?? 0, sumBVol);
+        const sVol = Math.max(rec?.sellVol ?? 0, sumSVol);
         perExchange[fl] = {
           buyValBil: Number(bVal.toFixed(2)),
           sellValBil: Number(sVal.toFixed(2)),
@@ -1105,21 +1150,23 @@ app.get('/api/foreign-trading', async (req, res) => {
       let netVol = 0;
 
       for (const fl of targetFloors) {
-        const rec = bkt?.[fl];
-        if (rec) {
-          buyValBil += rec.buyValBil;
-          sellValBil += rec.sellValBil;
-          netValBil += rec.netValBil;
-          buyVol += rec.buyVol;
-          sellVol += rec.sellVol;
-          netVol += rec.netVol;
-        } else if (d === resolvedDate) {
+        if (d === resolvedDate) {
           buyValBil += perExchange[fl].buyValBil;
           sellValBil += perExchange[fl].sellValBil;
           netValBil += perExchange[fl].netValBil;
           buyVol += perExchange[fl].buyVolMil * 1e6;
           sellVol += perExchange[fl].sellVolMil * 1e6;
           netVol += perExchange[fl].netVolMil * 1e6;
+        } else {
+          const rec = bkt?.[fl];
+          if (rec) {
+            buyValBil += rec.buyValBil;
+            sellValBil += rec.sellValBil;
+            netValBil += rec.netValBil;
+            buyVol += rec.buyVol;
+            sellVol += rec.sellVol;
+            netVol += rec.netVol;
+          }
         }
       }
       return {
@@ -1230,13 +1277,16 @@ app.get('/api/foreign-trading', async (req, res) => {
     const buyStocksCount = activeStocks.filter((s) => s.netValBil > 0).length;
     const sellStocksCount = activeStocks.filter((s) => s.netValBil < 0).length;
 
-    const isLiveWs = resolvedDate === today && liveWsCount > 0;
+    const isLiveWs = stockResolvedDate === today && liveWsCount > 0;
     res.json({
       exchange,
       requestedDate,
       resolvedDate,
       resolvedDateDisplay: formatDdMmYyyy(resolvedDate),
       resolvedDateShort: formatDdMm(resolvedDate),
+      stockDate: stockResolvedDate,
+      stockDateDisplay: formatDdMmYyyy(stockResolvedDate),
+      stockDateShort: formatDdMm(stockResolvedDate),
       source: isLiveWs ? 'VNDirect + SSI WS' : 'VNDirect',
       isLiveWs,
       liveWsCount,

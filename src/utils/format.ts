@@ -45,58 +45,69 @@ export function colorStatusClass(val: string): string {
       (k) => s.includes(k)
     )
   ) {
-    return 'text-[#059669] font-bold';
+    return 'text-emerald-600 dark:text-emerald-400 font-semibold';
   }
   if (
     ['YẾU', 'DƯỚI', 'SELL', 'CẮT LỖ', 'QUÁ', 'GÃY', 'GIAI ĐOẠN 4', 'CẢNH BÁO'].some((k) =>
       s.includes(k)
     )
   ) {
-    return 'text-[#dc2626] font-bold';
+    return 'text-red-600 dark:text-red-400 font-semibold';
   }
   if (
     ['TRUNG LẬP', 'CHẠM', 'CHỜ', 'NỔ VOL', 'KHÓA LÃI', 'GIAI ĐOẠN 3', 'QUAN SÁT'].some((k) =>
       s.includes(k)
     )
   ) {
-    return 'text-[#d97706] font-bold';
+    return 'text-amber-600 dark:text-amber-400 font-semibold';
   }
-  return 'text-slate-700';
+  return 'text-slate-700 dark:text-slate-300';
 }
 
 export function colorSignedClass(val: number | null | undefined): string {
-  if (val === null || val === undefined || !Number.isFinite(val)) return 'text-slate-500';
-  if (val > 0) return 'text-[#059669] font-bold';
-  if (val < 0) return 'text-[#dc2626] font-bold';
-  return 'text-[#d97706] font-semibold';
+  if (val === null || val === undefined || !Number.isFinite(val)) {
+    return 'text-slate-500 dark:text-slate-400';
+  }
+  if (val > 0) return 'text-emerald-600 dark:text-emerald-400 font-semibold';
+  if (val < 0) return 'text-red-600 dark:text-red-400 font-semibold';
+  return 'text-amber-600 dark:text-amber-400 font-semibold';
 }
 
 export function colorPctStrengthClass(val: number): string {
-  if (val >= 50) return 'text-[#059669] font-bold';
-  if (val <= 30) return 'text-[#dc2626] font-bold';
-  return 'text-[#d97706] font-semibold';
+  if (val >= 50) return 'text-emerald-600 dark:text-emerald-400 font-semibold';
+  if (val <= 30) return 'text-red-600 dark:text-red-400 font-semibold';
+  return 'text-amber-600 dark:text-amber-400 font-semibold';
 }
 
 export function colorPctWeakClass(val: number): string {
-  return val >= 50 ? 'text-[#dc2626] font-bold' : 'text-slate-700';
+  return val >= 50
+    ? 'text-red-600 dark:text-red-400 font-semibold'
+    : 'text-slate-700 dark:text-slate-300';
 }
 
 export function colorRsClass(val: number): string {
-  if (val >= 90) return 'text-[#7c3aed] font-bold';
-  if (val >= 80) return 'text-[#059669] font-bold';
-  return 'text-[#d97706] font-bold';
+  if (val >= 90) return 'text-violet-600 dark:text-violet-400 font-semibold';
+  if (val >= 80) return 'text-emerald-600 dark:text-emerald-400 font-semibold';
+  return 'text-amber-600 dark:text-amber-400 font-semibold';
 }
 
 export function colorVolScoreClass(val: number): string {
-  return val >= 1.5 ? 'text-[#059669] font-bold' : 'text-slate-700';
+  return val >= 1.5
+    ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+    : 'text-slate-700 dark:text-slate-300';
 }
 
-export function downloadCsv(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
+export function downloadCsv(
+  filename: string,
+  headers: string[],
+  rows: (string | number | null | undefined)[][]
+) {
   const escape = (v: unknown) => {
     const s = v === null || v === undefined ? '' : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const csv = '\uFEFF' + [headers.map(escape).join(','), ...rows.map((r) => r.map(escape).join(','))].join('\n');
+  const csv =
+    '\uFEFF' + [headers.map(escape).join(','), ...rows.map((r) => r.map(escape).join(','))].join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

@@ -1,16 +1,32 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Activity,
+  BarChart2,
+  Flame,
+  Globe,
+  HeartPulse,
+  LayoutGrid,
+  RefreshCw,
+  Snowflake,
+} from 'lucide-react';
 import { ALL_MAIN_INDICES, getVnTreemapColor } from '../shared/constants';
 import { PlotlyChart } from '../components/PlotlyChart';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { useTheme } from '../context/ThemeContext';
 import { patchIndicesWithTicks, patchTreemapWithTicks } from '../utils/livePatch';
 import { ForeignTradingPanel } from './ForeignTradingPanel';
 import {
+  ErrorBanner,
   FieldLabel,
   LoadingBar,
   MetricCard,
   PrimaryButton,
+  SectionCard,
+  SegmentedControl,
   SubTabs,
   inputCls,
+  tableHeadCls,
+  tableRowCls,
 } from '../components/UiPrimitives';
 import {
   colorPctStrengthClass,
@@ -101,9 +117,12 @@ const LIQUIDITY_SYMBOLS: Array<{ id: string; label: string }> = [
 ];
 
 export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) => {
+  const { isDark } = useTheme();
   const { liveAuto, ticks, tickVersion, syncVersion } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
-  const [subTab, setSubTab] = useState<'indices' | 'liquidity' | 'treemap' | 'foreign' | 'health'>('indices');
+  const [subTab, setSubTab] = useState<'indices' | 'liquidity' | 'treemap' | 'foreign' | 'health'>(
+    'indices'
+  );
 
   // --- Sub-tab 1.1: Indices Live ---
   const [idxDate, setIdxDate] = useState(today);
@@ -252,7 +271,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     return { traces, layout, height: Math.max(420, nRows * 250) };
   }, [idxData]);
 
-  // --- Sub-tab 1.1B: Intraday Liquidity Comparison (FireAnt style) ---
+  // --- Sub-tab 1.1B: Intraday Liquidity Comparison ---
   const [liqSym, setLiqSym] = useState<string>('VNINDEX');
   const [liqDate, setLiqDate] = useState(today);
   const [liqMetric, setLiqMetric] = useState<'vol' | 'val'>('vol');
@@ -305,7 +324,6 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     loadLiquidity(false, false);
   }, [subTab, loadLiquidity]);
 
-  // Silently reconcile intraday liquidity curves on WS index sync events (zero setInterval)
   const lastLiqSyncRef = useRef(syncVersion.indices);
   useEffect(() => {
     if (syncVersion.indices === lastLiqSyncRef.current) return;
@@ -330,7 +348,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
       : (summary?.curValBil ?? 0) >= (summary?.prevValBil ?? 0);
 
     const curLineColor = curHigher ? '#10b981' : '#f97316';
-    const curFillColor = curHigher ? 'rgba(16, 185, 129, 0.26)' : 'rgba(249, 115, 22, 0.22)';
+    const curFillColor = curHigher ? 'rgba(16, 185, 129, 0.24)' : 'rgba(249, 115, 22, 0.22)';
 
     const curCustomHover = times.map((_, idx) => {
       const c = curArr[idx];
@@ -352,8 +370,8 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
         x: times,
         y: prevArr,
         fill: 'tozeroy',
-        fillcolor: 'rgba(148, 163, 184, 0.22)',
-        line: { color: '#64748b', width: 1.8 },
+        fillcolor: isDark ? 'rgba(148, 163, 184, 0.14)' : 'rgba(148, 163, 184, 0.22)',
+        line: { color: isDark ? '#94a3b8' : '#64748b', width: 1.8 },
         hovertemplate: `Phiên trước: <b>%{y:,.${dec}f} ${unit}</b><extra></extra>`,
       },
     ];
@@ -391,7 +409,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
         orientation: 'h',
         x: 0,
         y: 1.12,
-        font: { size: 12, color: '#334155' },
+        font: { size: 12 },
       },
       xaxis: {
         type: 'category',
@@ -432,7 +450,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
           x1: '11:30',
           y0: 0,
           y1: 1,
-          line: { dash: 'dash', color: '#cbd5e1', width: 1.2 },
+          line: { dash: 'dash', color: isDark ? '#334155' : '#cbd5e1', width: 1.2 },
         },
       ],
       annotations: [
@@ -451,7 +469,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     };
 
     return { traces, layout };
-  }, [liqResp, liqMetric, liqShowAvg5, liqSym, liqDate]);
+  }, [liqResp, liqMetric, liqShowAvg5, liqSym, liqDate, isDark]);
 
   // --- Sub-tab 1.2: Treemap ---
   const [tmExchange, setTmExchange] = useState<'HOSE' | 'HNX' | 'UPCOM'>('HOSE');
@@ -491,13 +509,11 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     loadTreemap(false, false);
   }, [subTab, loadTreemap]);
 
-  // Patch treemap stock tiles & up/down/ref counts in-place from WS ticks
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'treemap' || tmDate !== today) return;
     setTmResp((prev: any) => patchTreemapWithTicks(prev, ticks, tmSizeMode));
   }, [tickVersion, ticks, tmSizeMode, liveAuto, isActive, subTab, tmDate, today]);
 
-  // Silently reconcile full board on WS board sync events
   const lastTmSyncRef = useRef(syncVersion.board);
   useEffect(() => {
     if (syncVersion.board === lastTmSyncRef.current) return;
@@ -519,17 +535,18 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     const labels: string[] = [rootEx];
     const parents: string[] = [''];
     const values: number[] = [0];
-    const colors: string[] = ['#0f172a'];
+    const colors: string[] = [isDark ? '#0b1120' : '#0f172a'];
     const texts: string[] = [
       `<b>${rootEx} (${fmtSigned(mktAvgPct, 2, '%')}) • Tổng: ${fmtNum(totalGtgd, 0)} ${
         tmSizeMode === 'value' ? 'Tỷ' : 'CP'
       }</b>`,
     ];
     const hovers: string[] = [
-      `<b>Toàn sàn ${rootEx}</b><br>Biến động BQ gia quyền: <b>${fmtSigned(mktAvgPct, 2, '%')}</b><br>Tổng: <b>${fmtNum(
-        totalGtgd,
-        1
-      )}</b><br>Số mã khớp lệnh: ${rows.length}`,
+      `<b>Toàn sàn ${rootEx}</b><br>Biến động BQ gia quyền: <b>${fmtSigned(
+        mktAvgPct,
+        2,
+        '%'
+      )}</b><br>Tổng: <b>${fmtNum(totalGtgd, 1)}</b><br>Số mã khớp lệnh: ${rows.length}`,
     ];
 
     const byInd = new Map<string, any[]>();
@@ -549,7 +566,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
       labels.push(ind);
       parents.push(rootEx);
       values.push(0);
-      colors.push('#1e293b');
+      colors.push(isDark ? '#1e293b' : '#1e293b');
       texts.push(`<b>${ind}</b> (${fmtSigned(secPct, 2, '%')})`);
       hovers.push(
         `<b>Ngành ${ind}</b><br>Biến động BQ: <b>${fmtSigned(secPct, 2, '%')}</b><br>Tổng: <b>${fmtNum(
@@ -568,13 +585,12 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
         const nameLine =
           r.companyName && r.companyName !== r.symbol ? `<br>${r.companyName}` : '';
         hovers.push(
-          `<b>${r.symbol}</b> (${ind})${nameLine}<br>Giá đóng cửa: <b>${fmtNum(r.price, 2)}</b><br>Thay đổi: <b>${fmtSigned(
-            r.pct,
-            2,
-            '%'
-          )}</b><br>${tmSizeMode === 'value' ? 'GTGD' : 'KLGD'}: <b>${fmtNum(r.sizeVal, 2)} ${
-            tmSizeMode === 'value' ? 'Tỷ VNĐ' : 'CP'
-          }</b>`
+          `<b>${r.symbol}</b> (${ind})${nameLine}<br>Giá đóng cửa: <b>${fmtNum(
+            r.price,
+            2
+          )}</b><br>Thay đổi: <b>${fmtSigned(r.pct, 2, '%')}</b><br>${
+            tmSizeMode === 'value' ? 'GTGD' : 'KLGD'
+          }: <b>${fmtNum(r.sizeVal, 2)} ${tmSizeMode === 'value' ? 'Tỷ VNĐ' : 'CP'}</b>`
         );
       }
     }
@@ -594,10 +610,14 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
           hoverinfo: 'text',
           marker: {
             colors,
-            line: { width: 1.2, color: '#ffffff' },
+            line: { width: 1.2, color: isDark ? '#0f172a' : '#ffffff' },
             cornerradius: 4,
           },
-          textfont: { color: '#ffffff', size: 13, family: 'Segoe UI, Arial, sans-serif' },
+          textfont: {
+            color: '#ffffff',
+            size: 13,
+            family: '"Plus Jakarta Sans", -apple-system, sans-serif',
+          },
           pathbar: { visible: false },
           tiling: { packing: 'squarify', pad: 3 },
         },
@@ -607,7 +627,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
         uirevision: `treemap_${rootEx}`,
       },
     };
-  }, [tmResp, tmSizeMode, tmExchange]);
+  }, [tmResp, tmSizeMode, tmExchange, isDark]);
 
   // --- Sub-tab 1.3: Market Health & Distribution Days ---
   const [maDate, setMaDate] = useState(today);
@@ -643,138 +663,174 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
         active={subTab}
         onChange={(id) => setSubTab(id as any)}
         tabs={[
-          { id: 'indices', label: '⏱️ Chỉ Số Trực Tiếp (SSI Realtime)' },
-          { id: 'liquidity', label: '📊 Thanh Khoản Trong Ngày' },
-          { id: 'treemap', label: '🗺️ Bản Đồ Nhiệt (Treemap)' },
-          { id: 'foreign', label: '🌍 Giao Dịch Nước Ngoài' },
-          { id: 'health', label: '🩺 Sức Khỏe & Ngày Phân Phối' },
+          {
+            id: 'indices',
+            label: 'Chỉ Số Trực Tiếp',
+            icon: <Activity className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'liquidity',
+            label: 'Thanh Khoản Trong Ngày',
+            icon: <BarChart2 className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'treemap',
+            label: 'Bản Đồ Nhiệt',
+            icon: <LayoutGrid className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'foreign',
+            label: 'Giao Dịch Nước Ngoài',
+            icon: <Globe className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'health',
+            label: 'Sức Khỏe & Phân Phối',
+            icon: <HeartPulse className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
         ]}
       />
 
       {subTab === 'indices' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-2">
-              <FieldLabel label="Ngày giao dịch">
-                <input
-                  type="date"
-                  value={idxDate}
-                  onChange={(e) => setIdxDate(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-8">
-              <div className="text-[12px] font-bold text-slate-600 mb-1">Chọn chỉ số hiển thị</div>
-              <div className="flex flex-wrap gap-1.5">
-                {ALL_MAIN_INDICES.map((sym) => {
-                  const active = selectedIndices.includes(sym);
-                  return (
-                    <button
-                      key={sym}
-                      type="button"
-                      onClick={() => toggleIndex(sym)}
-                      className={`px-3 py-1 rounded-md text-[12.5px] font-bold border transition-colors cursor-pointer ${
-                        active
-                          ? 'bg-[#0284c7] text-white border-[#0284c7]'
-                          : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
-                      }`}
-                    >
-                      {sym}
-                    </button>
-                  );
-                })}
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-2">
+                <FieldLabel label="Ngày giao dịch">
+                  <input
+                    type="date"
+                    value={idxDate}
+                    onChange={(e) => setIdxDate(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-8">
+                <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Chọn chỉ số hiển thị
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {ALL_MAIN_INDICES.map((sym) => {
+                    const active = selectedIndices.includes(sym);
+                    return (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => toggleIndex(sym)}
+                        className={`h-9 px-3 rounded-lg text-[12.5px] font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                          active
+                            ? 'bg-sky-600 dark:bg-sky-500 text-white dark:text-slate-950 border-sky-600 dark:border-sky-500'
+                            : 'bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        {sym}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="md:col-span-2">
+                <PrimaryButton
+                  onClick={() => loadIndices(true, false)}
+                  loading={idxLoading}
+                  className="w-full"
+                >
+                  {!idxLoading && <RefreshCw className="w-3.5 h-3.5" />}
+                  Làm mới
+                </PrimaryButton>
               </div>
             </div>
-            <div className="md:col-span-2">
-              <PrimaryButton
-                onClick={() => loadIndices(true, false)}
-                loading={idxLoading}
-                className="w-full"
-              >
-                🔄 Làm mới ngay
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
           {idxLoading && !idxData.length && (
             <LoadingBar text="Đang đồng bộ dữ liệu chỉ số trực tiếp..." />
           )}
 
           {!selectedIndices.length && (
-            <div className="p-4 bg-sky-50 border border-sky-200 rounded-lg text-sky-900 text-sm">
+            <div className="p-4 bg-sky-50 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800/60 rounded-xl text-sky-900 dark:text-sky-200 text-[13px]">
               Vui lòng chọn ít nhất một chỉ số.
             </div>
           )}
 
           {idxData.length > 0 && (
             <>
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-slate-600 px-1 tabular-nums">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-slate-500 dark:text-slate-400 px-1 tabular-nums">
                 {idxMeta.marketTotal && (
                   <>
-                    <strong className="text-slate-900">
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">
                       Tổng GTGD 3 sàn ({idxMeta.marketTotal.dateDisplay}):{' '}
-                      <span className="text-[#0284c7]">
+                      <span className="font-mono text-sky-600 dark:text-sky-400">
                         {fmtNum(idxMeta.marketTotal.totalValBil, 1)} Tỷ
                       </span>
-                    </strong>
+                    </span>
                     {idxMeta.marketTotal.valDeltaPct !== null && (
                       <span
-                        className={`font-bold ${
+                        className={`font-semibold font-mono ${
                           idxMeta.marketTotal.valDeltaPct >= 0
-                            ? 'text-[#059669]'
-                            : 'text-[#dc2626]'
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-red-600 dark:text-red-400'
                         }`}
                       >
                         ({fmtSigned(idxMeta.marketTotal.valDeltaPct, 1, '%')} vs phiên trước)
                       </span>
                     )}
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span>
                       Khớp lệnh:{' '}
-                      <strong className="text-slate-800">
+                      <strong className="font-mono text-slate-800 dark:text-slate-200">
                         {fmtNum(idxMeta.marketTotal.nmValBil, 1)} Tỷ
                       </strong>
                     </span>
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span>
                       Thỏa thuận:{' '}
-                      <strong className="text-slate-800">
+                      <strong className="font-mono text-slate-800 dark:text-slate-200">
                         {fmtNum(idxMeta.marketTotal.ptValBil, 1)} Tỷ
                       </strong>
                     </span>
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                     <span>
                       KLGD:{' '}
-                      <strong className="text-slate-800">
+                      <strong className="font-mono text-slate-800 dark:text-slate-200">
                         {fmtNum(idxMeta.marketTotal.totalVolMil, 1)} Tr CP
                       </strong>
                     </span>
-                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
                   </>
                 )}
                 {idxMeta.dataSource && (
                   <span>
-                    Nguồn: <strong className="text-slate-800">{idxMeta.dataSource}</strong>
+                    Nguồn:{' '}
+                    <strong className="text-slate-700 dark:text-slate-200">
+                      {idxMeta.dataSource}
+                    </strong>
                     {idxMeta.syncTime && (
                       <>
                         {' '}
                         · Đồng bộ:{' '}
-                        <span className="font-medium text-slate-700">{idxMeta.syncTime}</span>
+                        <span className="font-mono text-slate-700 dark:text-slate-300">
+                          {idxMeta.syncTime}
+                        </span>
                       </>
                     )}
                   </span>
                 )}
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                 {idxData.map((item) => {
                   const pxColor =
                     item.delta > 0
-                      ? 'text-[#059669]'
+                      ? 'text-emerald-600 dark:text-emerald-400'
                       : item.delta < 0
-                      ? 'text-[#dc2626]'
-                      : 'text-[#d97706]';
+                      ? 'text-red-600 dark:text-red-400'
+                      : 'text-amber-600 dark:text-amber-400';
+                  const dotColor =
+                    item.delta > 0
+                      ? 'bg-emerald-500'
+                      : item.delta < 0
+                      ? 'bg-red-500'
+                      : 'bg-amber-500';
                   const valPct =
                     typeof item.valDeltaPct === 'number' ? item.valDeltaPct : null;
                   const valTooltip =
@@ -788,32 +844,44 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                     <div
                       key={item.symbol}
                       title={valTooltip}
-                      className="bg-white border border-slate-200 border-l-4 border-l-[#0284c7] rounded-[10px] px-3 py-2.5 shadow-[0_1px_2px_rgba(15,23,42,0.03)]"
+                      className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-3 hover:border-slate-300 dark:hover:border-slate-700 transition-colors"
                     >
-                      <div className="text-[11.5px] font-bold text-slate-500 uppercase tracking-wide truncate">
-                        {item.symbol} ({item.tradeDateStr})
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="inline-flex items-center gap-1.5 text-[11.5px] font-bold text-slate-600 dark:text-slate-300 uppercase tracking-wide truncate">
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+                          {item.symbol}
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 tabular-nums">
+                          {item.tradeDateStr}
+                        </span>
                       </div>
-                      <div className="text-[20px] font-extrabold text-slate-900 mt-0.5 leading-tight tabular-nums">
+                      <div className="text-[20px] font-bold font-mono text-slate-900 dark:text-slate-50 mt-1.5 leading-tight tabular-nums tracking-tight">
                         {fmtNum(item.lastPx, 2)}
                       </div>
-                      <div className={`text-[12px] font-bold mt-0.5 tabular-nums ${pxColor}`}>
+                      <div
+                        className={`text-[12px] font-semibold font-mono mt-0.5 tabular-nums ${pxColor}`}
+                      >
                         {fmtSigned(item.delta, 2)} ({fmtSigned(item.pct, 2, '%')})
                       </div>
-                      <div className="mt-2 pt-1.5 border-t border-slate-100 space-y-0.5 text-[11.5px] tabular-nums">
+                      <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 space-y-0.5 text-[11.5px] font-mono tabular-nums">
                         <div className="flex items-baseline justify-between gap-1">
-                          <span className="text-slate-500">GTGD:</span>
-                          <span className="font-bold text-slate-900">
+                          <span className="font-sans text-slate-500 dark:text-slate-400">
+                            GTGD
+                          </span>
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
                             {item.totalValBil > 0 ? `${fmtNum(item.totalValBil, 1)} Tỷ` : '—'}
                           </span>
                         </div>
                         <div className="flex items-baseline justify-between gap-1 text-[11px]">
-                          <span className="text-slate-500">
-                            KL: {item.totalVolMil > 0 ? `${fmtNum(item.totalVolMil, 1)} Tr` : '—'}
+                          <span className="text-slate-500 dark:text-slate-400">
+                            KL {item.totalVolMil > 0 ? `${fmtNum(item.totalVolMil, 1)} Tr` : '—'}
                           </span>
                           {valPct !== null && (
                             <span
                               className={`font-semibold ${
-                                valPct >= 0 ? 'text-[#059669]' : 'text-[#dc2626]'
+                                valPct >= 0
+                                  ? 'text-emerald-600 dark:text-emerald-400'
+                                  : 'text-red-600 dark:text-red-400'
                               }`}
                             >
                               {fmtSigned(valPct, 1, '%')}
@@ -827,13 +895,13 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               </div>
 
               {indicesChart && (
-                <div className="bg-white border border-slate-200 rounded-[10px] p-2">
+                <SectionCard className="p-2.5">
                   <PlotlyChart
                     data={indicesChart.traces}
                     layout={indicesChart.layout}
                     height={indicesChart.height}
                   />
-                </div>
+                </SectionCard>
               )}
             </>
           )}
@@ -841,11 +909,11 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
       )}
 
       {subTab === 'liquidity' && (
-        <div className="space-y-3">
-          <div className="bg-white border border-slate-200 rounded-[10px] p-3 space-y-2.5">
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5 space-y-3">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
               <div className="lg:col-span-6">
-                <div className="text-[12px] font-bold text-slate-600 mb-1">
+                <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
                   Chỉ số / Sàn theo dõi thanh khoản
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -856,10 +924,10 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                         key={opt.id}
                         type="button"
                         onClick={() => setLiqSym(opt.id)}
-                        className={`px-3 py-1 rounded-md text-[12.5px] font-bold border transition-colors cursor-pointer ${
+                        className={`h-9 px-3 rounded-lg text-[12.5px] font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
                           active
-                            ? 'bg-[#0284c7] text-white border-[#0284c7]'
-                            : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
+                            ? 'bg-sky-600 dark:bg-sky-500 text-white dark:text-slate-950 border-sky-600 dark:border-sky-500'
+                            : 'bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                       >
                         {opt.label}
@@ -870,31 +938,17 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               </div>
 
               <div className="lg:col-span-3">
-                <div className="text-[12px] font-bold text-slate-600 mb-1">Hiển thị theo</div>
-                <div className="grid grid-cols-2 rounded-md overflow-hidden border border-slate-300">
-                  <button
-                    type="button"
-                    onClick={() => setLiqMetric('vol')}
-                    className={`py-1.5 px-2 text-[12px] font-bold transition-colors cursor-pointer ${
-                      liqMetric === 'vol'
-                        ? 'bg-[#0284c7] text-white'
-                        : 'bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    KL (Triệu CP)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLiqMetric('val')}
-                    className={`py-1.5 px-2 text-[12px] font-bold border-l border-slate-300 transition-colors cursor-pointer ${
-                      liqMetric === 'val'
-                        ? 'bg-[#0284c7] text-white'
-                        : 'bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    GT Khớp (Tỷ)
-                  </button>
+                <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Hiển thị theo
                 </div>
+                <SegmentedControl
+                  value={liqMetric}
+                  onChange={setLiqMetric}
+                  options={[
+                    { value: 'vol', label: 'KL (Triệu CP)' },
+                    { value: 'val', label: 'GT Khớp (Tỷ)' },
+                  ]}
+                />
               </div>
 
               <div className="lg:col-span-2">
@@ -912,30 +966,31 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                 <PrimaryButton
                   onClick={() => loadLiquidity(true, false)}
                   loading={liqLoading}
+                  aria-label="Làm mới thanh khoản"
                   className="w-full"
                 >
-                  🔄
+                  {!liqLoading && <RefreshCw className="w-4 h-4" />}
                 </PrimaryButton>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100 text-[12.5px] text-slate-600">
-              <label className="inline-flex items-center gap-2 cursor-pointer select-none font-medium text-slate-700">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-[12px] text-slate-500 dark:text-slate-400">
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none font-medium text-slate-700 dark:text-slate-300">
                 <input
                   type="checkbox"
                   checked={liqShowAvg5}
                   onChange={(e) => setLiqShowAvg5(e.target.checked)}
-                  className="rounded border-slate-300 text-[#0284c7] focus:ring-[#0284c7]"
+                  className="w-4 h-4 rounded accent-sky-600"
                 />
                 Hiển thị đường trung bình 5 phiên gần nhất
               </label>
 
               {liqResp && !liqResp.empty && (
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 tabular-nums">
-                  <strong className="text-slate-900">
+                  <strong className="text-slate-800 dark:text-slate-200">
                     {liqSym === 'ALL3' ? 'Toàn thị trường (HOSE + HNX + UPCOM)' : liqSym}
                   </strong>
-                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-300 dark:text-slate-700">·</span>
                   <span>
                     {liqResp.isLiveNow
                       ? `Trực tiếp đến ${liqResp.cutoffTime}`
@@ -943,29 +998,25 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                   </span>
                   {liqResp.prevDateDisplay && (
                     <>
-                      <span className="text-slate-300">·</span>
+                      <span className="text-slate-300 dark:text-slate-700">·</span>
                       <span>So với phiên trước: {liqResp.prevDateDisplay}</span>
                     </>
                   )}
-                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-300 dark:text-slate-700">·</span>
                   <span>Nguồn: {liqResp.source || 'VNDirect'}</span>
                 </div>
               )}
             </div>
-          </div>
+          </SectionCard>
 
           {liqLoading && !liqResp && (
             <LoadingBar text={`Đang tải dữ liệu thanh khoản trong ngày cho ${liqSym}...`} />
           )}
 
-          {liqError && (
-            <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
-              {liqError}
-            </div>
-          )}
+          {liqError && <ErrorBanner message={liqError} />}
 
           {liqResp && liqResp.empty && !liqLoading && (
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
+            <div className="p-4 bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 rounded-xl text-amber-900 dark:text-amber-200 text-[13px]">
               Không có dữ liệu khớp lệnh theo phút cho {liqSym} quanh ngày đã chọn.
             </div>
           )}
@@ -990,7 +1041,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                     : prevVal;
 
                 return (
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                     <MetricCard
                       label={`${isVol ? 'KL' : 'GT'} Khớp Lệnh (${liqResp.curDateShort} · ${
                         liqResp.cutoffTime
@@ -1058,14 +1109,14 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               })()}
 
               {liquidityChart && (
-                <div className="bg-white border border-slate-200 rounded-[10px] p-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-1">
-                    <h4 className="font-bold text-[14.5px] text-slate-900">
+                <SectionCard className="p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
+                    <h4 className="font-bold text-[14.5px] text-slate-900 dark:text-slate-100">
                       Biểu đồ {liqMetric === 'vol' ? 'Khối lượng' : 'Giá trị'} khớp lệnh lũy kế trong
                       ngày — {liqSym === 'ALL3' ? 'Toàn thị trường (3 sàn)' : liqSym}
                     </h4>
-                    <span className="text-[11.5px] text-slate-500">
-                      Đường màu xanh khi thanh khoản cao hơn phiên trước, màu cam khi thấp hơn
+                    <span className="text-[11.5px] text-slate-500 dark:text-slate-400">
+                      Xanh: cao hơn phiên trước · Cam: thấp hơn phiên trước
                     </span>
                   </div>
                   <PlotlyChart
@@ -1073,69 +1124,68 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                     layout={liquidityChart.layout}
                     height={430}
                   />
-                </div>
+                </SectionCard>
               )}
 
               {liqResp.milestones && liqResp.milestones.length > 0 && (
-                <div className="bg-white border border-slate-200 rounded-[10px] p-3">
-                  <h4 className="font-bold text-[14.5px] text-slate-900 mb-2">
+                <SectionCard className="p-3.5">
+                  <h4 className="font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
                     So sánh thanh khoản lũy kế theo khung giờ ({liqResp.curDateShort} vs{' '}
                     {liqResp.prevDateShort || '—'})
                   </h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-[13px] border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                          <th className="py-2 px-2.5 text-left">Khung giờ</th>
-                          <th className="py-2 px-2.5 text-right">
+                      <thead className={tableHeadCls}>
+                        <tr>
+                          <th className="py-2.5 px-3 text-left">Khung giờ</th>
+                          <th className="py-2.5 px-3 text-right">
                             KL {liqResp.curDateShort} (Tr CP)
                           </th>
-                          <th className="py-2 px-2.5 text-right">
+                          <th className="py-2.5 px-3 text-right">
                             KL {liqResp.prevDateShort || 'Trước'} (Tr CP)
                           </th>
-                          <th className="py-2 px-2.5 text-right">Chênh lệch KL</th>
-                          <th className="py-2 px-2.5 text-right">
+                          <th className="py-2.5 px-3 text-right">Chênh lệch KL</th>
+                          <th className="py-2.5 px-3 text-right">
                             GT {liqResp.curDateShort} (Tỷ)
                           </th>
-                          <th className="py-2 px-2.5 text-right">
+                          <th className="py-2.5 px-3 text-right">
                             GT {liqResp.prevDateShort || 'Trước'} (Tỷ)
                           </th>
-                          <th className="py-2 px-2.5 text-right">Chênh lệch GT</th>
+                          <th className="py-2.5 px-3 text-right">Chênh lệch GT</th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 font-mono tabular-nums">
                         {liqResp.milestones.map((m) => (
-                          <tr
-                            key={m.time}
-                            className="border-b border-slate-100 hover:bg-slate-50 tabular-nums"
-                          >
-                            <td className="py-2 px-2.5 font-bold text-slate-800">{m.time}</td>
-                            <td className="py-2 px-2.5 text-right font-semibold text-slate-900">
+                          <tr key={m.time} className={tableRowCls}>
+                            <td className="py-2 px-3 font-bold text-slate-800 dark:text-slate-200">
+                              {m.time}
+                            </td>
+                            <td className="py-2 px-3 text-right font-semibold text-slate-900 dark:text-slate-100">
                               {m.curVol !== null ? fmtNum(m.curVol, 2) : '—'}
                             </td>
-                            <td className="py-2 px-2.5 text-right text-slate-600">
+                            <td className="py-2 px-3 text-right text-slate-500 dark:text-slate-400">
                               {m.prevVol !== null ? fmtNum(m.prevVol, 2) : '—'}
                             </td>
                             <td
-                              className={`py-2 px-2.5 text-right ${
+                              className={`py-2 px-3 text-right ${
                                 m.volDiffPct !== null
                                   ? colorSignedClass(m.volDiffPct)
-                                  : 'text-slate-400'
+                                  : 'text-slate-400 dark:text-slate-600'
                               }`}
                             >
                               {m.volDiffPct !== null ? fmtSigned(m.volDiffPct, 2, '%') : '—'}
                             </td>
-                            <td className="py-2 px-2.5 text-right font-semibold text-slate-900">
+                            <td className="py-2 px-3 text-right font-semibold text-slate-900 dark:text-slate-100">
                               {m.curVal !== null ? fmtNum(m.curVal, 1) : '—'}
                             </td>
-                            <td className="py-2 px-2.5 text-right text-slate-600">
+                            <td className="py-2 px-3 text-right text-slate-500 dark:text-slate-400">
                               {m.prevVal !== null ? fmtNum(m.prevVal, 1) : '—'}
                             </td>
                             <td
-                              className={`py-2 px-2.5 text-right ${
+                              className={`py-2 px-3 text-right ${
                                 m.valDiffPct !== null
                                   ? colorSignedClass(m.valDiffPct)
-                                  : 'text-slate-400'
+                                  : 'text-slate-400 dark:text-slate-600'
                               }`}
                             >
                               {m.valDiffPct !== null ? fmtSigned(m.valDiffPct, 2, '%') : '—'}
@@ -1145,7 +1195,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                       </tbody>
                     </table>
                   </div>
-                </div>
+                </SectionCard>
               )}
             </>
           )}
@@ -1153,100 +1203,112 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
       )}
 
       {subTab === 'treemap' && (
-        <div className="space-y-2.5">
-          <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-2">
-              <FieldLabel label="Sàn giao dịch">
-                <select
-                  value={tmExchange}
-                  onChange={(e) => setTmExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM')}
-                  className={inputCls}
+        <div className="space-y-3">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-2">
+                <FieldLabel label="Sàn giao dịch">
+                  <select
+                    value={tmExchange}
+                    onChange={(e) => setTmExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM')}
+                    className={inputCls}
+                  >
+                    <option value="HOSE">HOSE</option>
+                    <option value="HNX">HNX</option>
+                    <option value="UPCOM">UPCOM</option>
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <FieldLabel label="Ngày bản đồ nhiệt">
+                  <input
+                    type="date"
+                    value={tmDate}
+                    onChange={(e) => setTmDate(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <FieldLabel label="Kích thước ô theo">
+                  <select
+                    value={tmSizeMode}
+                    onChange={(e) => setTmSizeMode(e.target.value as 'value' | 'volume')}
+                    className={inputCls}
+                  >
+                    <option value="value">Giá trị GD (Tỷ)</option>
+                    <option value="volume">Khối lượng GD</option>
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <PrimaryButton
+                  onClick={() => loadTreemap(true, false)}
+                  loading={tmLoading}
+                  className="w-full"
                 >
-                  <option value="HOSE">HOSE</option>
-                  <option value="HNX">HNX</option>
-                  <option value="UPCOM">UPCOM</option>
-                </select>
-              </FieldLabel>
+                  {!tmLoading && <RefreshCw className="w-3.5 h-3.5" />}
+                  Nạp lại
+                </PrimaryButton>
+              </div>
             </div>
-            <div className="md:col-span-3">
-              <FieldLabel label="Ngày bản đồ nhiệt">
-                <input
-                  type="date"
-                  value={tmDate}
-                  onChange={(e) => setTmDate(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-3">
-              <FieldLabel label="Kích thước ô theo">
-                <select
-                  value={tmSizeMode}
-                  onChange={(e) => setTmSizeMode(e.target.value as 'value' | 'volume')}
-                  className={inputCls}
-                >
-                  <option value="value">Giá trị GD (Tỷ)</option>
-                  <option value="volume">Khối lượng GD</option>
-                </select>
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <PrimaryButton
-                onClick={() => loadTreemap(true, false)}
-                loading={tmLoading}
-                className="w-full"
-              >
-                🔄 Nạp lại dữ liệu
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
-          <div className="flex flex-wrap gap-1.5 items-center bg-white border border-slate-200 rounded-lg px-3 py-2 text-[12px] font-bold">
-            <span className="text-slate-700 mr-1">Chú thích màu:</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#0284c7]">≤ −6.5% (Sàn)</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#dc2626]">−6.5% ~ −2%</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#ef4444]">−2% ~ 0%</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#d97706]">0% (TC)</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#10b981]">0% ~ +2%</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#059669]">+2% ~ +6.5%</span>
-            <span className="rounded px-2.5 py-0.5 text-white bg-[#9333ea]">≥ +6.5% (Trần)</span>
+          <div className="flex flex-wrap gap-x-3 gap-y-1.5 items-center justify-between px-1 text-[12px]">
+            <div className="flex flex-wrap items-center gap-1.5 font-semibold font-mono text-[11px]">
+              <span className="font-sans text-[12px] text-slate-500 dark:text-slate-400 mr-1">
+                Thang màu:
+              </span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#0284c7]">≤ −6.5% Sàn</span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#dc2626]">−6.5 ~ −2%</span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#ef4444]">−2 ~ 0%</span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#d97706]">0% TC</span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#10b981]">0 ~ +2%</span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#059669]">+2 ~ +6.5%</span>
+              <span className="rounded px-2 py-0.5 text-white bg-[#9333ea]">≥ +6.5% Trần</span>
+            </div>
+
+            {tmResp?.counts && (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-slate-500 dark:text-slate-400 tabular-nums">
+                <strong className="text-slate-800 dark:text-slate-200">
+                  Sàn {tmResp.exchange || tmExchange}
+                </strong>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                <span>
+                  {tmResp.mode === 'live'
+                    ? `Trực tiếp (${tmResp.syncTime})`
+                    : `EOD ${tmResp.tradeDateDisplay || tmResp.tradeDate}`}
+                </span>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                <span>{tmResp.totalSymbols ?? tmResp.rows?.length ?? 0} mã</span>
+                <span className="text-slate-300 dark:text-slate-700">·</span>
+                <span className="font-mono">
+                  Tăng{' '}
+                  <strong className="text-emerald-600 dark:text-emerald-400">
+                    {tmResp.counts.up}
+                  </strong>{' '}
+                  / Giảm{' '}
+                  <strong className="text-red-600 dark:text-red-400">{tmResp.counts.down}</strong> /
+                  TC{' '}
+                  <strong className="text-amber-600 dark:text-amber-400">
+                    {tmResp.counts.ref}
+                  </strong>
+                </span>
+              </div>
+            )}
           </div>
 
           {tmLoading && !tmResp && (
             <LoadingBar text={`Đang tải dữ liệu bản đồ nhiệt sàn ${tmExchange}...`} />
           )}
 
-          {tmResp?.counts && (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12.5px] text-slate-600 px-1 tabular-nums">
-              <strong className="text-slate-900">
-                Sàn {tmResp.exchange || tmExchange}
-              </strong>
-              <span className="text-slate-300">·</span>
-              <span>
-                {tmResp.mode === 'live'
-                  ? `Trực tiếp (${tmResp.syncTime})`
-                  : `Dữ liệu EOD phiên gần nhất ${tmResp.tradeDateDisplay || tmResp.tradeDate}`}
-              </span>
-              <span className="text-slate-300">·</span>
-              <span>Nguồn: {tmResp.source || 'VNDirect'}</span>
-              <span className="text-slate-300">·</span>
-              <span>{tmResp.totalSymbols ?? tmResp.rows?.length ?? 0} mã khớp lệnh</span>
-              <span className="text-slate-300">·</span>
-              <span>
-                Tăng: <strong className="text-[#059669]">{tmResp.counts.up}</strong> | Giảm:{' '}
-                <strong className="text-[#dc2626]">{tmResp.counts.down}</strong> | TC:{' '}
-                <strong className="text-[#d97706]">{tmResp.counts.ref}</strong>
-              </span>
-            </div>
-          )}
-
           {treemapPlot ? (
-            <div className="bg-white border border-slate-200 rounded-[10px] p-1">
+            <SectionCard className="p-1.5">
               <PlotlyChart data={treemapPlot.data} layout={treemapPlot.layout} height={700} />
-            </div>
+            </SectionCard>
           ) : (
             !tmLoading && (
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
+              <div className="p-4 bg-amber-50 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 rounded-xl text-amber-900 dark:text-amber-200 text-[13px]">
                 Không có dữ liệu giao dịch cho sàn {tmExchange} vào ngày đã chọn.
               </div>
             )
@@ -1259,88 +1321,115 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
       )}
 
       {subTab === 'health' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-3">
-              <FieldLabel label="Ngày phân tích">
-                <input
-                  type="date"
-                  value={maDate}
-                  onChange={(e) => setMaDate(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-3">
+                <FieldLabel label="Ngày phân tích">
+                  <input
+                    type="date"
+                    value={maDate}
+                    onChange={(e) => setMaDate(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Cửa sổ DD">
+                  <input
+                    type="number"
+                    min={10}
+                    max={60}
+                    value={ddWin}
+                    onChange={(e) => setDdWin(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Xóa DD (%)">
+                  <input
+                    type="number"
+                    min={3}
+                    max={15}
+                    step={0.5}
+                    value={cancelReb}
+                    onChange={(e) => setCancelReb(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Độ trễ MA20">
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={ma20Lag}
+                    onChange={(e) => setMa20Lag(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <PrimaryButton
+                  onClick={runHealthAnalysis}
+                  loading={healthLoading}
+                  className="w-full"
+                >
+                  {!healthLoading && <HeartPulse className="w-4 h-4" />}
+                  Phân Tích Thị Trường
+                </PrimaryButton>
+              </div>
             </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Cửa sổ DD">
-                <input
-                  type="number"
-                  min={10}
-                  max={60}
-                  value={ddWin}
-                  onChange={(e) => setDdWin(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Xóa DD (%)">
-                <input
-                  type="number"
-                  min={3}
-                  max={15}
-                  step={0.5}
-                  value={cancelReb}
-                  onChange={(e) => setCancelReb(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Độ trễ MA20">
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={ma20Lag}
-                  onChange={(e) => setMa20Lag(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-3">
-              <PrimaryButton onClick={runHealthAnalysis} loading={healthLoading} className="w-full">
-                🩺 Phân Tích Thị Trường
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
           {healthLoading && (
             <LoadingBar text="Đang đếm ngày phân phối các chỉ số và quét sức mạnh các nhóm ngành..." />
           )}
 
           {healthRes && (
-            <div className="space-y-3">
+            <div className="space-y-3.5">
               <div className="space-y-2">
                 {healthRes.summaries.map((s: any) => (
                   <div
                     key={s.index}
-                    className="bg-sky-50 border border-sky-200 rounded-lg px-4 py-2.5 text-[13.5px] text-slate-800"
+                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-[13px] text-slate-700 dark:text-slate-300 flex flex-wrap items-center gap-x-2 gap-y-1"
                   >
-                    <strong>{s.index}</strong>: Phân phối <strong>{s.dd}</strong> ({s.ddDates}) |
-                    Stalling <strong>{s.stall}</strong> | Churning <strong>{s.churn}</strong>
+                    <strong className="font-mono text-slate-900 dark:text-slate-50">
+                      {s.index}
+                    </strong>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span>
+                      Phân phối <strong className="font-mono">{s.dd}</strong> ({s.ddDates})
+                    </span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span>
+                      Stalling <strong className="font-mono">{s.stall}</strong>
+                    </span>
+                    <span className="text-slate-300 dark:text-slate-700">·</span>
+                    <span>
+                      Churning <strong className="font-mono">{s.churn}</strong>
+                    </span>
                     {s.extra && (
                       <>
-                        {' '}
-                        | <strong>Rủi ro:</strong>{' '}
-                        <code className="bg-white px-1.5 py-0.5 rounded border border-sky-200 font-bold">
-                          {s.extra.riskScore}
-                        </code>{' '}
-                        → <strong>Tỷ trọng:</strong>{' '}
-                        <code className="bg-white px-1.5 py-0.5 rounded border border-sky-200 font-bold text-[#0284c7]">
-                          {s.extra.allocTxt}
-                        </code>{' '}
-                        ({s.extra.reason})
+                        <span className="text-slate-300 dark:text-slate-700">·</span>
+                        <span>
+                          Rủi ro:{' '}
+                          <strong className="font-mono text-slate-900 dark:text-slate-100">
+                            {s.extra.riskScore}
+                          </strong>
+                        </span>
+                        <span className="text-slate-300 dark:text-slate-700">→</span>
+                        <span>
+                          Tỷ trọng:{' '}
+                          <strong className="font-mono text-sky-600 dark:text-sky-400">
+                            {s.extra.allocTxt}
+                          </strong>{' '}
+                          <span className="text-slate-500 dark:text-slate-400">
+                            ({s.extra.reason})
+                          </span>
+                        </span>
                       </>
                     )}
                   </div>
@@ -1348,77 +1437,107 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <div className="lg:col-span-7 bg-white border border-slate-200 rounded-[10px] p-3">
-                  <h4 className="font-bold text-[15px] text-slate-900 mb-2">
-                    🔥 Nhóm Ngành DẪN DẮT (&gt; 50% mã trên MA20)
+                <SectionCard className="lg:col-span-7 p-3.5">
+                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
+                    <Flame className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    Nhóm Ngành Dẫn Dắt (&gt; 50% mã trên MA20)
                   </h4>
                   {healthRes.leaders.length ? (
                     <div className="overflow-x-auto">
                       <table className="w-full text-[13px] border-collapse">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
-                            <th className="py-2 px-2.5">Ngành</th>
+                        <thead className={tableHeadCls}>
+                          <tr>
+                            <th className="py-2 px-2.5 text-left">Ngành</th>
                             <th className="py-2 px-2.5 text-right">% &gt; MA20</th>
                             <th className="py-2 px-2.5 text-right">Trước đó</th>
                             <th className="py-2 px-2.5 text-right">Thay đổi</th>
-                            <th className="py-2 px-2.5">Cảnh báo</th>
+                            <th className="py-2 px-2.5 text-left">Cảnh báo</th>
                             <th className="py-2 px-2.5 text-right">Số mã</th>
                           </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                           {healthRes.leaders.map((r: any) => (
-                            <tr key={r.industry} className="border-b border-slate-100 hover:bg-slate-50">
-                              <td className="py-2 px-2.5 font-semibold">{r.industry}</td>
-                              <td className={`py-2 px-2.5 text-right tabular-nums ${colorPctStrengthClass(r.pctAboveMa20)}`}>
+                            <tr key={r.industry} className={tableRowCls}>
+                              <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
+                                {r.industry}
+                              </td>
+                              <td
+                                className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorPctStrengthClass(
+                                  r.pctAboveMa20
+                                )}`}
+                              >
                                 {fmtNum(r.pctAboveMa20, 1)}%
                               </td>
-                              <td className="py-2 px-2.5 text-right tabular-nums">{fmtNum(r.prevPct, 1)}%</td>
-                              <td className={`py-2 px-2.5 text-right tabular-nums ${colorSignedClass(r.change)}`}>
+                              <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                                {fmtNum(r.prevPct, 1)}%
+                              </td>
+                              <td
+                                className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorSignedClass(
+                                  r.change
+                                )}`}
+                              >
                                 {fmtSigned(r.change, 1, '%')}
                               </td>
-                              <td className={`py-2 px-2.5 ${colorStatusClass(r.warning)}`}>{r.warning}</td>
-                              <td className="py-2 px-2.5 text-right tabular-nums">{r.count}</td>
+                              <td className={`py-2 px-2.5 ${colorStatusClass(r.warning)}`}>
+                                {r.warning}
+                              </td>
+                              <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                                {r.count}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                   ) : (
-                    <p className="text-sm text-slate-500">Không có nhóm ngành nào đạt chuẩn dẫn dắt.</p>
+                    <p className="text-[13px] text-slate-500 dark:text-slate-400">
+                      Không có nhóm ngành nào đạt chuẩn dẫn dắt.
+                    </p>
                   )}
-                </div>
+                </SectionCard>
 
-                <div className="lg:col-span-5 bg-white border border-slate-200 rounded-[10px] p-3">
-                  <h4 className="font-bold text-[15px] text-slate-900 mb-2">
-                    ❄️ Nhóm Ngành SUY YẾU (&gt; 50% mã dưới MA50)
+                <SectionCard className="lg:col-span-5 p-3.5">
+                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
+                    <Snowflake className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                    Nhóm Ngành Suy Yếu (&gt; 50% mã dưới MA50)
                   </h4>
                   {healthRes.weak.length ? (
                     <div className="overflow-x-auto">
                       <table className="w-full text-[13px] border-collapse">
-                        <thead>
-                          <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
-                            <th className="py-2 px-2.5">Ngành</th>
+                        <thead className={tableHeadCls}>
+                          <tr>
+                            <th className="py-2 px-2.5 text-left">Ngành</th>
                             <th className="py-2 px-2.5 text-right">% &lt; MA50</th>
                             <th className="py-2 px-2.5 text-right">Số mã</th>
                           </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                           {healthRes.weak.map((r: any) => (
-                            <tr key={r.industry} className="border-b border-slate-100 hover:bg-slate-50">
-                              <td className="py-2 px-2.5 font-semibold">{r.industry}</td>
-                              <td className={`py-2 px-2.5 text-right tabular-nums ${colorPctWeakClass(r.pctBelowMa50)}`}>
+                            <tr key={r.industry} className={tableRowCls}>
+                              <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
+                                {r.industry}
+                              </td>
+                              <td
+                                className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorPctWeakClass(
+                                  r.pctBelowMa50
+                                )}`}
+                              >
                                 {fmtNum(r.pctBelowMa50, 1)}%
                               </td>
-                              <td className="py-2 px-2.5 text-right tabular-nums">{r.count}</td>
+                              <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                                {r.count}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                   ) : (
-                    <p className="text-sm text-slate-500">Không có nhóm ngành nào suy yếu &gt; 50%.</p>
+                    <p className="text-[13px] text-slate-500 dark:text-slate-400">
+                      Không có nhóm ngành nào suy yếu &gt; 50%.
+                    </p>
                   )}
-                </div>
+                </SectionCard>
               </div>
             </div>
           )}

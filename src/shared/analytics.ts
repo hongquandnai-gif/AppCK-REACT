@@ -150,7 +150,7 @@ export function buildMarketHealth(
         pctAboveMa20: Number(pctNow.toFixed(1)),
         prevPct: Number(pctPrev.toFixed(1)),
         change: Number(deltaPp.toFixed(1)),
-        warning: pctPrev - pctNow >= 25 ? '⚠️ Suy yếu' : '—',
+        warning: pctPrev - pctNow >= 25 ? 'Suy yếu' : '—',
         count: v.tot,
       });
     }
@@ -533,16 +533,16 @@ export function buildPortfolioEvaluation(
 
     const isStrong = Boolean(ma50 && ma150 && ma200 && lastPx > ma50 && ma50 > ma150 && ma150 > ma200);
     let reco = 'NẮM GIỮ (Theo dõi)';
-    if (plPct <= -7.0) reco = '🛑 BÁN CẮT LỖ (-7%)';
-    else if (plPct <= -5.0) reco = '⚠️ CẢNH BÁO (-5%)';
+    if (plPct <= -7.0) reco = 'BÁN CẮT LỖ (-7%)';
+    else if (plPct <= -5.0) reco = 'CẢNH BÁO (-5%)';
     else if (ma50 && lastPx < ma50) reco = 'BÁN/HẠ TỶ TRỌNG (Gãy MA50)';
-    else if (plPct >= 25.0) reco = '💰 CHỐT LỜI (>25%)';
+    else if (plPct >= 25.0) reco = 'CHỐT LỜI (>25%)';
     else if (plPct >= 20.0) {
-      reco = daysHeld < 15 ? '💎 POWER PLAY (Giữ 8 tuần)' : 'CÂN NHẮC CHỐT LỜI (20-25%)';
+      reco = daysHeld < 15 ? 'POWER PLAY (Giữ 8 tuần)' : 'CÂN NHẮC CHỐT LỜI (20-25%)';
     } else if (ma20 && lastPx < ma20) {
       reco = plPct > 0 ? 'BÁN KHÓA LÃI (<MA20)' : 'QUAN SÁT (<MA20)';
     } else if (plPct >= 2.0 && plPct <= 5.0 && isStrong) {
-      reco = '➕ MUA THÊM (Xác nhận Trend)';
+      reco = 'MUA THÊM (Xác nhận Trend)';
     } else if (isStrong) {
       reco = 'NẮM GIỮ (Trend mạnh)';
     }

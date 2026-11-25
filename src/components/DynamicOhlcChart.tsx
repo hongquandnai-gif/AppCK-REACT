@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PlotlyChart } from './PlotlyChart';
+import { useTheme } from '../context/ThemeContext';
 import { fmtInt, fmtNum } from '../utils/format';
 
 export interface OhlcChartBar {
@@ -35,6 +36,7 @@ export const DynamicOhlcChart: React.FC<DynamicOhlcChartProps> = ({
   height = 560,
   uirevision = 'v11_keep_view',
 }) => {
+  const { isDark } = useTheme();
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
   useEffect(() => {
@@ -51,16 +53,18 @@ export const DynamicOhlcChart: React.FC<DynamicOhlcChartProps> = ({
   const barStats = useMemo(() => {
     if (!activeBar) return null;
     const { close, prevClose } = activeBar;
-    let clr = '#475569';
+    let clr = isDark ? '#94a3b8' : '#475569';
     let chg = '—';
     if (prevClose !== null && prevClose > 0) {
       const delta = close - prevClose;
       const pct = (delta / prevClose) * 100;
-      clr = delta > 0 ? '#059669' : delta < 0 ? '#dc2626' : '#d97706';
+      if (delta > 0) clr = isDark ? '#34d399' : '#059669';
+      else if (delta < 0) clr = isDark ? '#f87171' : '#dc2626';
+      else clr = isDark ? '#fbbf24' : '#d97706';
       chg = `${delta >= 0 ? '+' : ''}${delta.toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
     }
     return { clr, chg };
-  }, [activeBar]);
+  }, [activeBar, isDark]);
 
   const { traces, layout } = useMemo(() => {
     const xLbls = bars.map((b) => b.label);
@@ -158,8 +162,12 @@ export const DynamicOhlcChart: React.FC<DynamicOhlcChartProps> = ({
         yanchor: 'bottom',
         text: hl.label,
         showarrow: false,
-        font: { size: 11, color: hl.color, family: 'Segoe UI, Arial, sans-serif' },
-        bgcolor: 'rgba(255,255,255,0.85)',
+        font: {
+          size: 11,
+          color: hl.color,
+          family: '"Plus Jakarta Sans", -apple-system, sans-serif',
+        },
+        bgcolor: isDark ? 'rgba(15,23,42,0.88)' : 'rgba(255,255,255,0.88)',
       });
     }
 
@@ -214,7 +222,7 @@ export const DynamicOhlcChart: React.FC<DynamicOhlcChartProps> = ({
     }
 
     return { traces: tracesList, layout: chartLayout };
-  }, [bars, symbol, maInfo, showVolume, showMaVol, hlines, uirevision]);
+  }, [bars, symbol, maInfo, showVolume, showMaVol, hlines, uirevision, isDark]);
 
   const maReadouts = useMemo(() => {
     if (!activeBar?.mas) return [];
@@ -233,39 +241,46 @@ export const DynamicOhlcChart: React.FC<DynamicOhlcChartProps> = ({
   }, [activeBar, maInfo]);
 
   return (
-    <div className="bg-white border border-slate-200 rounded-[10px] p-2.5 shadow-xs">
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3">
       {activeBar && barStats && (
-        <div
-          className="border-l-4 px-3 py-1 mb-1 text-[13px] text-slate-800 leading-relaxed"
-          style={{ borderLeftColor: barStats.clr }}
-        >
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
-            <span className="font-bold text-slate-900">{symbol}</span>
-            <span className="text-slate-500">({activeBar.dtDisplay})</span>
-            <span className="text-slate-300">|</span>
+        <div className="border-b border-slate-100 dark:border-slate-800 pb-2 mb-2 text-[12.5px] text-slate-700 dark:text-slate-300 leading-relaxed">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono tabular-nums">
+            <span className="inline-flex items-center gap-1.5 font-sans">
+              <span
+                className="w-2 h-2 rounded-full shrink-0"
+                style={{ backgroundColor: barStats.clr }}
+              />
+              <span className="font-bold text-slate-900 dark:text-slate-100 font-mono">
+                {symbol}
+              </span>
+            </span>
+            <span className="text-slate-500 dark:text-slate-400 text-[12px]">
+              {activeBar.dtDisplay}
+            </span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
             <span>
-              O: <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.open)}</strong>
+              O <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.open)}</strong>
             </span>
             <span>
-              H: <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.high)}</strong>
+              H <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.high)}</strong>
             </span>
             <span>
-              L: <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.low)}</strong>
+              L <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.low)}</strong>
             </span>
             <span>
-              C: <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.close)}</strong>
+              C <strong style={{ color: barStats.clr }}>{fmtNum(activeBar.close)}</strong>
             </span>
-            <span className="text-slate-300">|</span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
             <strong style={{ color: barStats.clr }}>{barStats.chg}</strong>
-            <span className="text-slate-300">|</span>
+            <span className="text-slate-300 dark:text-slate-700">·</span>
             <span>
-              Vol: <strong>{fmtInt(activeBar.volume)}</strong>
+              Vol <strong className="text-slate-900 dark:text-slate-100">{fmtInt(activeBar.volume)}</strong>
             </span>
           </div>
           {maReadouts.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[12px] mt-0.5">
+            <div className="flex flex-wrap gap-x-3.5 gap-y-0.5 text-[11.5px] font-mono tabular-nums mt-1">
               {maReadouts.map((m) => (
-                <span key={m.label} style={{ color: m.color }} className="font-bold">
+                <span key={m.label} style={{ color: m.color }} className="font-semibold">
                   {m.label}: {m.val}
                 </span>
               ))}

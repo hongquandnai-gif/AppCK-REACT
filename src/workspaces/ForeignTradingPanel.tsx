@@ -1,14 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, RefreshCw, Search } from 'lucide-react';
 import { PlotlyChart } from '../components/PlotlyChart';
 import {
+  ErrorBanner,
   FieldLabel,
   LoadingBar,
   MetricCard,
   PrimaryButton,
   SecondaryButton,
+  SectionCard,
+  SegmentedControl,
   inputCls,
+  tableHeadCls,
+  tableRowCls,
 } from '../components/UiPrimitives';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
+import { useTheme } from '../context/ThemeContext';
 import { patchForeignTradingWithTicks } from '../utils/livePatch';
 import {
   colorSignedClass,
@@ -76,6 +83,9 @@ interface ForeignTradingResp {
   resolvedDate: string;
   resolvedDateDisplay: string;
   resolvedDateShort: string;
+  stockDate?: string;
+  stockDateDisplay?: string;
+  stockDateShort?: string;
   source: string;
   isLiveWs: boolean;
   liveWsCount: number;
@@ -102,11 +112,11 @@ interface ForeignTradingResp {
   stocks: ForeignStockRow[];
 }
 
-const EXCHANGE_OPTIONS: Array<{ id: 'ALL' | 'HOSE' | 'HNX' | 'UPCOM'; label: string }> = [
-  { id: 'HOSE', label: 'HOSE' },
-  { id: 'HNX', label: 'HNX' },
-  { id: 'UPCOM', label: 'UPCOM' },
-  { id: 'ALL', label: 'Toàn TT (3 sàn)' },
+const EXCHANGE_OPTIONS: Array<{ value: 'ALL' | 'HOSE' | 'HNX' | 'UPCOM'; label: string }> = [
+  { value: 'HOSE', label: 'HOSE' },
+  { value: 'HNX', label: 'HNX' },
+  { value: 'UPCOM', label: 'UPCOM' },
+  { value: 'ALL', label: '3 sàn' },
 ];
 
 const WILDCARD_SUB = ['*'];
@@ -116,6 +126,7 @@ interface Props {
 }
 
 export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
+  const { isDark } = useTheme();
   const { liveAuto, ticks, tickVersion, syncVersion } = useMarketStream();
   const today = useMemo(() => vnTodayIso(), []);
 
@@ -164,7 +175,6 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
     [exchange, targetDate, sessions]
   );
 
-  // Subscribe live SSI WS ticks while active and viewing today
   useSubscribeSymbols(WILDCARD_SUB, isActive && targetDate >= today && liveAuto);
 
   useEffect(() => {
@@ -172,13 +182,11 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
     loadForeign(false, false);
   }, [isActive, loadForeign]);
 
-  // Patch foreign flow & stock prices in-place from SSI WebSocket ticks without flicker
   useEffect(() => {
     if (!liveAuto || !isActive || targetDate < today) return;
     setData((prev) => patchForeignTradingWithTicks(prev, ticks));
   }, [tickVersion, ticks, liveAuto, isActive, targetDate, today]);
 
-  // Silently reconcile official exchange-level foreign figures on WS board sync events
   const lastSyncRef = useRef(syncVersion.board);
   useEffect(() => {
     if (syncVersion.board === lastSyncRef.current) return;
@@ -187,7 +195,6 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
     loadForeign(false, true);
   }, [syncVersion.board, liveAuto, isActive, targetDate, today, loadForeign]);
 
-  // Reset industry filter if it disappears on exchange change
   useEffect(() => {
     if (industryFilter === 'ALL' || !data?.sectors?.length) return;
     if (!data.sectors.some((s) => s.industry === industryFilter)) {
@@ -205,7 +212,6 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
     const buyArr = data.history.map((h) => (isVal ? h.buyValBil : h.buyVolMil));
     const sellArr = data.history.map((h) => (isVal ? h.sellValBil : h.sellVolMil));
 
-    // Cumulative net across the displayed window
     const cumArr: number[] = [];
     let acc = 0;
     for (const v of netArr) {
@@ -227,14 +233,16 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
       )} ${unit}</b>`;
     });
 
+    const lineAccent = isDark ? '#38bdf8' : '#0284c7';
+
     const traces: any[] = [
       {
         type: 'bar',
         name: `Mua/Bán ròng (${unit})`,
         x: xDates,
         y: netArr,
-        text: hoverTexts,
-        hovertemplate: '%{text}<extra></extra>',
+        hovertext: hoverTexts,
+        hovertemplate: '%{hovertext}<extra></extra>',
         marker: { color: barColors, line: { width: 0 } },
         yaxis: 'y',
       },
@@ -244,8 +252,8 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
         name: `Lũy kế ${data.history.length} phiên (${unit})`,
         x: xDates,
         y: cumArr,
-        line: { color: '#0284c7', width: 2.2 },
-        marker: { size: 5, color: '#0284c7' },
+        line: { color: lineAccent, width: 2.2 },
+        marker: { size: 5, color: lineAccent },
         hovertemplate: `Lũy kế: <b>%{y:+,.2f} ${unit}</b><extra></extra>`,
         yaxis: 'y2',
       },
@@ -259,7 +267,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
         orientation: 'h',
         x: 0,
         y: 1.13,
-        font: { size: 12, color: '#334155' },
+        font: { size: 12 },
       },
       xaxis: {
         type: 'category',
@@ -275,7 +283,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
         zerolinewidth: 1.2,
       },
       yaxis2: {
-        title: { text: `Lũy kế (${unit})`, font: { size: 11.5, color: '#0284c7' } },
+        title: { text: `Lũy kế (${unit})`, font: { size: 11.5, color: lineAccent } },
         overlaying: 'y',
         side: 'right',
         showgrid: false,
@@ -284,7 +292,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
     };
 
     return { traces, layout };
-  }, [data, metric, exchange, sessions, targetDate]);
+  }, [data, metric, exchange, sessions, targetDate, isDark]);
 
   // Chart 2: Top 10 Net Buy & Top 10 Net Sell Diverging Horizontal Bar Chart
   const topMoversChart = useMemo(() => {
@@ -302,7 +310,6 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
       .sort((a, b) => (isVal ? a.netValBil - b.netValBil : a.netVol - b.netVol))
       .slice(0, 10);
 
-    // Combine: top sellers at bottom (most negative first) -> top buyers at top (largest positive last)
     const combined = [...sellList, ...buyList.reverse()];
     if (!combined.length) return null;
 
@@ -326,6 +333,9 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
         )} ${unit}</b><br>Ròng: <b>${fmtSigned(vals[i], 2)} ${unit}</b>`
     );
 
+    const maxAbs = Math.max(1, ...vals.map((v) => Math.abs(v)));
+    const xPad = Number((maxAbs * 1.26).toFixed(2));
+
     return {
       traces: [
         {
@@ -335,7 +345,8 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
           y: labels,
           text: texts,
           textposition: 'outside',
-          textfont: { size: 11, color: '#334155' },
+          cliponaxis: false,
+          textfont: { size: 11, color: isDark ? '#cbd5e1' : '#334155' },
           hovertext: hovers,
           hoverinfo: 'text',
           marker: { color: colors, line: { width: 0 } },
@@ -343,10 +354,11 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
       ],
       layout: {
         uirevision: `foreign_top_${exchange}_${metric}_${targetDate}`,
-        margin: { l: 54, r: 52, t: 10, b: 32 },
+        margin: { l: 58, r: 36, t: 10, b: 32 },
         showlegend: false,
         xaxis: {
           title: { text: `Giá trị ròng (${unit})`, font: { size: 11, color: '#64748b' } },
+          range: [-xPad, xPad],
           showgrid: true,
           gridcolor: '#f1f5f9',
           zeroline: true,
@@ -356,12 +368,12 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
         yaxis: {
           type: 'category',
           automargin: true,
-          tickfont: { size: 11.5, color: '#0f172a' },
+          tickfont: { size: 11.5, color: isDark ? '#e2e8f0' : '#0f172a' },
         },
       },
       height: Math.max(380, combined.length * 23 + 60),
     };
-  }, [data, metric, exchange, targetDate]);
+  }, [data, metric, exchange, targetDate, isDark]);
 
   // Filtered & sorted stock rows for detail table
   const filteredStocks = useMemo(() => {
@@ -429,59 +441,33 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
   const isVal = metric === 'val';
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3.5">
       {/* Control Bar */}
-      <div className="bg-white border border-slate-200 rounded-[10px] p-3 space-y-2.5">
+      <SectionCard className="p-3.5 space-y-3">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-end">
           <div className="lg:col-span-4">
-            <div className="text-[12px] font-bold text-slate-600 mb-1">Sàn giao dịch</div>
-            <div className="flex flex-wrap gap-1.5">
-              {EXCHANGE_OPTIONS.map((opt) => {
-                const active = exchange === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setExchange(opt.id)}
-                    className={`px-3 py-1 rounded-md text-[12.5px] font-bold border transition-colors cursor-pointer ${
-                      active
-                        ? 'bg-[#0284c7] text-white border-[#0284c7]'
-                        : 'bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+            <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+              Sàn giao dịch
             </div>
+            <SegmentedControl
+              value={exchange}
+              onChange={setExchange}
+              options={EXCHANGE_OPTIONS}
+            />
           </div>
 
           <div className="lg:col-span-3">
-            <div className="text-[12px] font-bold text-slate-600 mb-1">Hiển thị theo</div>
-            <div className="grid grid-cols-2 rounded-md overflow-hidden border border-slate-300">
-              <button
-                type="button"
-                onClick={() => setMetric('val')}
-                className={`py-1.5 px-2 text-[12px] font-bold transition-colors cursor-pointer ${
-                  metric === 'val'
-                    ? 'bg-[#0284c7] text-white'
-                    : 'bg-white text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                Giá trị (Tỷ)
-              </button>
-              <button
-                type="button"
-                onClick={() => setMetric('vol')}
-                className={`py-1.5 px-2 text-[12px] font-bold border-l border-slate-300 transition-colors cursor-pointer ${
-                  metric === 'vol'
-                    ? 'bg-[#0284c7] text-white'
-                    : 'bg-white text-slate-600 hover:bg-slate-50'
-                }`}
-              >
-                KL (Triệu CP)
-              </button>
+            <div className="text-[11.5px] font-semibold text-slate-500 dark:text-slate-400 mb-1">
+              Hiển thị theo
             </div>
+            <SegmentedControl
+              value={metric}
+              onChange={setMetric}
+              options={[
+                { value: 'val', label: 'Giá trị (Tỷ)' },
+                { value: 'vol', label: 'KL (Triệu CP)' },
+              ]}
+            />
           </div>
 
           <div className="lg:col-span-2">
@@ -513,41 +499,42 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
             <PrimaryButton
               onClick={() => loadForeign(true, false)}
               loading={loading}
+              aria-label="Làm mới giao dịch nước ngoài"
               className="w-full"
             >
-              🔄
+              {!loading && <RefreshCw className="w-4 h-4" />}
             </PrimaryButton>
           </div>
         </div>
 
         {/* Inline status & 3-exchange quick strip */}
         {data && s && (
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-100 text-[12.5px] text-slate-600 tabular-nums">
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-[12px] text-slate-500 dark:text-slate-400 tabular-nums">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-              <strong className="text-slate-900">
+              <strong className="text-slate-800 dark:text-slate-200">
                 {exchange === 'ALL' ? 'Toàn thị trường (3 sàn)' : `Sàn ${exchange}`}
               </strong>
-              <span className="text-slate-300">·</span>
+              <span className="text-slate-300 dark:text-slate-700">·</span>
               <span>Phiên: {data.resolvedDateDisplay}</span>
-              <span className="text-slate-300">·</span>
+              <span className="text-slate-300 dark:text-slate-700">·</span>
               <span>Nguồn: {data.source}</span>
               {data.isLiveWs && (
                 <>
-                  <span className="text-slate-300">·</span>
-                  <span className="inline-flex items-center gap-1 font-semibold text-[#059669]">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
+                  <span className="text-slate-300 dark:text-slate-700">·</span>
+                  <span className="inline-flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400 font-mono">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                     SSI WS ({data.syncTime})
                   </span>
                 </>
               )}
             </div>
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12px]">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[12px]">
               {(['HOSE', 'HNX', 'UPCOM'] as const).map((fl) => {
                 const exStat = s.perExchange[fl];
                 const net = isVal ? exStat.netValBil : exStat.netVolMil;
                 return (
                   <span key={fl}>
-                    {fl}:{' '}
+                    <span className="font-sans text-slate-500 dark:text-slate-400">{fl}:</span>{' '}
                     <strong className={colorSignedClass(net)}>
                       {fmtSigned(net, isVal ? 1 : 2)} {isVal ? 'Tỷ' : 'Tr'}
                     </strong>
@@ -557,15 +544,15 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
             </div>
           </div>
         )}
-      </div>
+      </SectionCard>
 
       {loading && !data && (
         <LoadingBar text="Đang tải dữ liệu giao dịch khối ngoại toàn thị trường..." />
       )}
 
       {error && (
-        <div className="p-3.5 bg-red-50 border border-red-200 rounded-lg text-red-900 text-[13px] flex flex-wrap items-center justify-between gap-2">
-          <span>{error}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <ErrorBanner message={error} className="flex-1" />
           <SecondaryButton onClick={() => loadForeign(true, false)}>Thử lại</SecondaryButton>
         </div>
       )}
@@ -573,7 +560,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
       {data && s && (
         <>
           {/* 4 KPI Summary Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <MetricCard
               label={`Mua / Bán Ròng (${data.resolvedDateShort})`}
               value={
@@ -583,8 +570,8 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
               }
               delta={
                 isVal
-                  ? `KL ròng: ${fmtSigned(s.netVolMil, 2)} Tr CP · ${s.buyStocksCount} mua / ${s.sellStocksCount} bán`
-                  : `GT ròng: ${fmtSigned(s.netValBil, 2)} Tỷ · ${s.buyStocksCount} mua / ${s.sellStocksCount} bán`
+                  ? `KL: ${fmtSigned(s.netVolMil, 2)} Tr CP · ${s.buyStocksCount} mua / ${s.sellStocksCount} bán`
+                  : `GT: ${fmtSigned(s.netValBil, 2)} Tỷ · ${s.buyStocksCount} mua / ${s.sellStocksCount} bán`
               }
               deltaPositive={s.netValBil > 0 ? true : s.netValBil < 0 ? false : null}
             />
@@ -611,7 +598,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
             <MetricCard
               label="Lũy Kế 10 Phiên Gần Nhất"
               value={`${fmtSigned(s.cumNet10Bil, 1)} Tỷ`}
-              delta={`5 phiên: ${fmtSigned(s.cumNet5Bil, 1)} Tỷ · 20 phiên: ${fmtSigned(
+              delta={`5P: ${fmtSigned(s.cumNet5Bil, 1)} Tỷ · 20P: ${fmtSigned(
                 s.cumNet20Bil,
                 1
               )} Tỷ`}
@@ -621,14 +608,14 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
 
           {/* Chart 1: Multi-Session History */}
           {historyChart && (
-            <div className="bg-white border border-slate-200 rounded-[10px] p-2.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-1">
-                <h4 className="font-bold text-[14.5px] text-slate-900">
+            <SectionCard className="p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1 pb-2">
+                <h4 className="font-bold text-[14.5px] text-slate-900 dark:text-slate-100">
                   Diễn biến Mua/Bán ròng khối ngoại {data.history.length} phiên gần nhất —{' '}
                   {exchange === 'ALL' ? 'Toàn thị trường (3 sàn)' : exchange}
                 </h4>
-                <span className="text-[11.5px] text-slate-500">
-                  Cột xanh: mua ròng · Cột đỏ: bán ròng · Đường xanh dương: lũy kế
+                <span className="text-[11.5px] text-slate-500 dark:text-slate-400">
+                  Cột xanh: mua ròng · Cột đỏ: bán ròng · Đường xanh: lũy kế
                 </span>
               </div>
               <PlotlyChart
@@ -636,17 +623,17 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                 layout={historyChart.layout}
                 height={340}
               />
-            </div>
+            </SectionCard>
           )}
 
           {/* Row 2: Top 10 Net Buy/Sell Chart + SSI ICB Sector Breakdown */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-            <div className="lg:col-span-6 bg-white border border-slate-200 rounded-[10px] p-2.5">
-              <div className="flex items-center justify-between gap-2 px-1 pb-1">
-                <h4 className="font-bold text-[14.5px] text-slate-900">
-                  Top 10 Mua Ròng &amp; Top 10 Bán Ròng ({data.resolvedDateShort})
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-3.5">
+            <SectionCard className="lg:col-span-6 p-3">
+              <div className="flex items-center justify-between gap-2 px-1 pb-2">
+                <h4 className="font-bold text-[14.5px] text-slate-900 dark:text-slate-100">
+                  Top 10 Mua Ròng &amp; Top 10 Bán Ròng ({data.stockDateShort || data.resolvedDateShort})
                 </h4>
-                <span className="text-[11.5px] text-slate-500">
+                <span className="text-[11.5px] text-slate-500 dark:text-slate-400">
                   Đơn vị: {isVal ? 'Tỷ VNĐ' : 'Triệu CP'}
                 </span>
               </div>
@@ -657,31 +644,36 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                   height={topMoversChart.height}
                 />
               ) : (
-                <p className="text-sm text-slate-500 p-4">Chưa có giao dịch khối ngoại trong phiên.</p>
+                <p className="text-[13px] text-slate-500 dark:text-slate-400 p-4">
+                  Chưa có giao dịch khối ngoại trong phiên.
+                </p>
               )}
-            </div>
+            </SectionCard>
 
-            <div className="lg:col-span-6 bg-white border border-slate-200 rounded-[10px] p-2.5 flex flex-col">
-              <div className="flex items-center justify-between gap-2 px-1 pb-2">
-                <h4 className="font-bold text-[14.5px] text-slate-900">
+            <SectionCard className="lg:col-span-6 p-3 flex flex-col">
+              <div className="flex items-center justify-between gap-2 px-1 pb-2.5">
+                <h4 className="font-bold text-[14.5px] text-slate-900 dark:text-slate-100">
                   Phân bổ Khối Ngoại Theo Ngành (SSI ICB)
+                  {data.stockDate && data.stockDate !== data.resolvedDate && data.stockDateShort
+                    ? ` (${data.stockDateShort})`
+                    : ''}
                 </h4>
-                <span className="text-[11.5px] text-slate-500">
-                  Bấm vào ngành để lọc bảng bên dưới
+                <span className="text-[11.5px] text-slate-500 dark:text-slate-400">
+                  Chọn ngành để lọc bảng bên dưới
                 </span>
               </div>
               <div className="overflow-auto max-h-[480px] flex-1">
                 <table className="w-full text-[12.5px] border-collapse">
-                  <thead className="sticky top-0 bg-slate-50 z-10">
-                    <tr className="border-b border-slate-200 text-slate-600 text-left">
-                      <th className="py-2 px-2">Ngành (SSI ICB)</th>
-                      <th className="py-2 px-2 text-right">Mua (Tỷ)</th>
-                      <th className="py-2 px-2 text-right">Bán (Tỷ)</th>
-                      <th className="py-2 px-2 text-right">Ròng (Tỷ)</th>
-                      <th className="py-2 px-2">Mã nổi bật</th>
+                  <thead className={tableHeadCls}>
+                    <tr className="text-left">
+                      <th className="py-2 px-2.5">Ngành (SSI ICB)</th>
+                      <th className="py-2 px-2.5 text-right">Mua (Tỷ)</th>
+                      <th className="py-2 px-2.5 text-right">Bán (Tỷ)</th>
+                      <th className="py-2 px-2.5 text-right">Ròng (Tỷ)</th>
+                      <th className="py-2 px-2.5">Mã nổi bật</th>
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                     {data.sectors.map((sec) => {
                       const selected = industryFilter === sec.industry;
                       return (
@@ -690,30 +682,32 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                           onClick={() =>
                             setIndustryFilter(selected ? 'ALL' : sec.industry)
                           }
-                          className={`border-b border-slate-100 cursor-pointer transition-colors ${
-                            selected ? 'bg-sky-50' : 'hover:bg-slate-50'
+                          className={`cursor-pointer transition-colors ${
+                            selected
+                              ? 'bg-sky-50 dark:bg-sky-950/50'
+                              : tableRowCls
                           }`}
                         >
-                          <td className="py-1.5 px-2 font-semibold text-slate-800">
+                          <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
                             {sec.industry}{' '}
-                            <span className="text-[11px] font-normal text-slate-400">
+                            <span className="text-[11px] font-mono font-normal text-slate-400 dark:text-slate-500">
                               ({sec.stockCount})
                             </span>
                           </td>
-                          <td className="py-1.5 px-2 text-right tabular-nums text-slate-700">
+                          <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">
                             {fmtNum(sec.buyValBil, 2)}
                           </td>
-                          <td className="py-1.5 px-2 text-right tabular-nums text-slate-700">
+                          <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">
                             {fmtNum(sec.sellValBil, 2)}
                           </td>
                           <td
-                            className={`py-1.5 px-2 text-right tabular-nums ${colorSignedClass(
+                            className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorSignedClass(
                               sec.netValBil
                             )}`}
                           >
                             {fmtSigned(sec.netValBil, 2)}
                           </td>
-                          <td className="py-1.5 px-2 font-bold text-slate-900">
+                          <td className="py-2 px-2.5 font-bold font-mono text-slate-900 dark:text-slate-100">
                             {sec.topSymbol}
                           </td>
                         </tr>
@@ -722,54 +716,46 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                   </tbody>
                 </table>
               </div>
-            </div>
+            </SectionCard>
           </div>
 
           {/* Row 3: Searchable Detail Table */}
-          <div className="bg-white border border-slate-200 rounded-[10px] p-3 space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <h4 className="font-bold text-[14.5px] text-slate-900">
-                  Chi Tiết Giao Dịch Khối Ngoại Theo Mã ({filteredStocks.length} mã)
+          <SectionCard className="p-3.5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <h4 className="font-bold text-[14.5px] text-slate-900 dark:text-slate-100">
+                  Chi Tiết Giao Dịch Khối Ngoại Theo Mã{' '}
+                  <span className="font-mono font-medium text-slate-500 dark:text-slate-400 text-[13px]">
+                    ({filteredStocks.length})
+                  </span>
                 </h4>
-                <div className="inline-flex rounded-md overflow-hidden border border-slate-300 text-[12px]">
-                  {(
-                    [
-                      ['all', 'Tất cả'],
-                      ['buy', 'Mua ròng'],
-                      ['sell', 'Bán ròng'],
-                    ] as const
-                  ).map(([id, lbl], idx) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setSideFilter(id)}
-                      className={`px-2.5 py-1 font-bold cursor-pointer ${
-                        idx > 0 ? 'border-l border-slate-300' : ''
-                      } ${
-                        sideFilter === id
-                          ? 'bg-[#0284c7] text-white'
-                          : 'bg-white text-slate-600 hover:bg-slate-50'
-                      }`}
-                    >
-                      {lbl}
-                    </button>
-                  ))}
-                </div>
+                <SegmentedControl
+                  size="sm"
+                  value={sideFilter}
+                  onChange={setSideFilter}
+                  options={[
+                    { value: 'all', label: 'Tất cả' },
+                    { value: 'buy', label: 'Mua ròng' },
+                    { value: 'sell', label: 'Bán ròng' },
+                  ]}
+                />
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <input
-                  type="text"
-                  value={searchTxt}
-                  onChange={(e) => setSearchTxt(e.target.value)}
-                  placeholder="Tìm mã CP / ngành..."
-                  className="h-[32px] px-2.5 text-[12.5px] border border-slate-300 rounded-md focus:outline-none focus:border-[#0284c7] w-44"
-                />
+                <div className="relative flex items-center">
+                  <Search className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 absolute left-2.5 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={searchTxt}
+                    onChange={(e) => setSearchTxt(e.target.value)}
+                    placeholder="Tìm mã CP / ngành..."
+                    className={`${inputCls} !w-44 pl-8`}
+                  />
+                </div>
                 <select
                   value={industryFilter}
                   onChange={(e) => setIndustryFilter(e.target.value)}
-                  className="h-[32px] px-2 text-[12.5px] border border-slate-300 rounded-md bg-white"
+                  className={`${inputCls} !w-auto max-w-[200px]`}
                 >
                   <option value="ALL">Tất cả ngành</option>
                   {data.sectors.map((sec) => (
@@ -781,79 +767,87 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                 <select
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value as any)}
-                  className="h-[32px] px-2 text-[12.5px] border border-slate-300 rounded-md bg-white"
+                  className={`${inputCls} !w-auto`}
                 >
                   <option value="netDesc">Mua ròng mạnh nhất</option>
                   <option value="netAsc">Bán ròng mạnh nhất</option>
                   <option value="buyDesc">GT Mua lớn nhất</option>
                   <option value="sellDesc">GT Bán lớn nhất</option>
                 </select>
-                <SecondaryButton onClick={exportCsv} className="!py-1 !px-2.5 !text-[12px]">
-                  💾 CSV
+                <SecondaryButton onClick={exportCsv}>
+                  <Download className="w-3.5 h-3.5" />
+                  CSV
                 </SecondaryButton>
               </div>
             </div>
 
             <div className="overflow-auto max-h-[460px]">
               <table className="w-full text-[12.5px] border-collapse">
-                <thead className="sticky top-0 bg-slate-50 z-10">
-                  <tr className="border-b border-slate-200 text-slate-600 text-right">
-                    <th className="py-2 px-2 text-left">Mã</th>
-                    <th className="py-2 px-2 text-left">Sàn</th>
-                    <th className="py-2 px-2 text-left">Ngành (SSI ICB)</th>
-                    <th className="py-2 px-2">Giá</th>
-                    <th className="py-2 px-2">%</th>
-                    <th className="py-2 px-2">KL Mua</th>
-                    <th className="py-2 px-2">KL Bán</th>
-                    <th className="py-2 px-2">GT Mua (Tỷ)</th>
-                    <th className="py-2 px-2">GT Bán (Tỷ)</th>
-                    <th className="py-2 px-2">GT Ròng (Tỷ)</th>
-                    <th className="py-2 px-2">Room còn lại</th>
+                <thead className={tableHeadCls}>
+                  <tr className="text-right">
+                    <th className="py-2.5 px-2.5 text-left">Mã</th>
+                    <th className="py-2.5 px-2.5 text-left">Sàn</th>
+                    <th className="py-2.5 px-2.5 text-left">Ngành (SSI ICB)</th>
+                    <th className="py-2.5 px-2.5">Giá</th>
+                    <th className="py-2.5 px-2.5">%</th>
+                    <th className="py-2.5 px-2.5">KL Mua</th>
+                    <th className="py-2.5 px-2.5">KL Bán</th>
+                    <th className="py-2.5 px-2.5">GT Mua (Tỷ)</th>
+                    <th className="py-2.5 px-2.5">GT Bán (Tỷ)</th>
+                    <th className="py-2.5 px-2.5">GT Ròng (Tỷ)</th>
+                    <th className="py-2.5 px-2.5">Room còn lại</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                   {filteredStocks.slice(0, 150).map((row) => (
                     <tr
                       key={row.symbol}
-                      className="border-b border-slate-100 hover:bg-slate-50 tabular-nums text-right"
+                      className={`${tableRowCls} text-right font-mono tabular-nums`}
                     >
                       <td
-                        className="py-1.5 px-2 text-left font-bold text-slate-900"
+                        className="py-2 px-2.5 text-left font-bold text-slate-900 dark:text-slate-100"
                         title={row.companyName}
                       >
                         {row.symbol}
                       </td>
-                      <td className="py-1.5 px-2 text-left text-[11.5px] font-semibold text-[#0284c7]">
+                      <td className="py-2 px-2.5 text-left font-sans text-[11.5px] font-semibold text-sky-600 dark:text-sky-400">
                         {row.exchange}
                       </td>
-                      <td className="py-1.5 px-2 text-left text-slate-600 max-w-[180px] truncate">
+                      <td className="py-2 px-2.5 text-left font-sans text-slate-600 dark:text-slate-400 max-w-[180px] truncate">
                         {row.industry}
                       </td>
-                      <td className="py-1.5 px-2 font-semibold text-slate-800">
+                      <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
                         {row.price > 0 ? fmtNum(row.price, 2) : '—'}
                       </td>
-                      <td className={`py-1.5 px-2 ${colorSignedClass(row.pct)}`}>
+                      <td className={`py-2 px-2.5 ${colorSignedClass(row.pct)}`}>
                         {row.price > 0 ? fmtSigned(row.pct, 2, '%') : '—'}
                       </td>
-                      <td className="py-1.5 px-2 text-slate-700">{fmtInt(row.buyVol)}</td>
-                      <td className="py-1.5 px-2 text-slate-700">{fmtInt(row.sellVol)}</td>
-                      <td className="py-1.5 px-2 text-[#059669] font-medium">
+                      <td className="py-2 px-2.5 text-slate-600 dark:text-slate-300">
+                        {fmtInt(row.buyVol)}
+                      </td>
+                      <td className="py-2 px-2.5 text-slate-600 dark:text-slate-300">
+                        {fmtInt(row.sellVol)}
+                      </td>
+                      <td className="py-2 px-2.5 text-emerald-600 dark:text-emerald-400 font-medium">
                         {fmtNum(row.buyValBil, 2)}
                       </td>
-                      <td className="py-1.5 px-2 text-[#dc2626] font-medium">
+                      <td className="py-2 px-2.5 text-red-600 dark:text-red-400 font-medium">
                         {fmtNum(row.sellValBil, 2)}
                       </td>
-                      <td className={`py-1.5 px-2 ${colorSignedClass(row.netValBil)}`}>
+                      <td className={`py-2 px-2.5 ${colorSignedClass(row.netValBil)}`}>
                         {fmtSigned(row.netValBil, 2)}
                       </td>
-                      <td className="py-1.5 px-2 text-slate-600">
+                      <td className="py-2 px-2.5 text-slate-500 dark:text-slate-400">
                         {row.currentRoom > 0 ? fmtInt(row.currentRoom) : '—'}
                       </td>
                     </tr>
                   ))}
                   {filteredStocks.length === 0 && (
                     <tr>
-                      <td colSpan={11} className="py-6 text-center text-slate-500">
+                      <td
+                        colSpan={11}
+                        className="py-6 text-center font-sans text-slate-500 dark:text-slate-400"
+                      >
                         Không tìm thấy mã cổ phiếu phù hợp với bộ lọc.
                       </td>
                     </tr>
@@ -861,7 +855,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                 </tbody>
               </table>
             </div>
-          </div>
+          </SectionCard>
         </>
       )}
     </div>

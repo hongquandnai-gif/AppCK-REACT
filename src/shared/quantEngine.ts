@@ -178,11 +178,11 @@ export function detectVcpPattern(
 
         let status = '';
         if (pctFromPivot >= 0 && pctFromPivot <= 5.0) {
-          status = '🟢 Điểm Mua Chuẩn (<= 5%)';
+          status = 'Điểm Mua Chuẩn (<= 5%)';
         } else if (pctFromPivot > 5.0) {
-          status = `⚠️ Quá Điểm Mua (+${pctFromPivot.toFixed(1)}%)`;
+          status = `Quá Điểm Mua (+${pctFromPivot.toFixed(1)}%)`;
         } else {
-          status = `⏳ Chờ Pivot (${pctFromPivot.toFixed(1)}%)`;
+          status = `Chờ Pivot (${pctFromPivot.toFixed(1)}%)`;
         }
 
         return {

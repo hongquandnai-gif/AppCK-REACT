@@ -1,4 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ClipboardCheck,
+  Radar,
+  Search,
+  TrendingUp,
+  Trophy,
+  Waves,
+  Zap,
+} from 'lucide-react';
 import { INDUSTRY_GROUPS } from '../shared/constants';
 import { DynamicOhlcChart } from '../components/DynamicOhlcChart';
 import { PlotlyChart } from '../components/PlotlyChart';
@@ -9,8 +20,11 @@ import {
   LoadingBar,
   MetricCard,
   PrimaryButton,
+  SectionCard,
   SubTabs,
   inputCls,
+  tableHeadCls,
+  tableRowCls,
 } from '../components/UiPrimitives';
 import {
   addDaysIso,
@@ -104,7 +118,6 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
     };
   }, [minRes, diagSym, liveAuto, ticks]);
 
-  // Subscribe currently displayed screener symbols for smooth real-time WS price patching
   const activeScreenerSymbols = useMemo(() => {
     if (subTab === 'radar' && radarRes?.stocks?.length) {
       return radarRes.stocks.map((s: any) => String(s.symbol || '')).filter(Boolean);
@@ -125,7 +138,6 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
     isActive && liveAuto && activeScreenerSymbols.length > 0
   );
 
-  // Patch Radar EOD stock prices & volumes in-place without resetting table or scroll
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'radar') return;
     setRadarRes((prev: any) => {
@@ -135,7 +147,6 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
     });
   }, [tickVersion, ticks, liveAuto, isActive, subTab]);
 
-  // Patch Minervini screened stock prices in-place
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'minervini') return;
     setMinRes((prev: any) => {
@@ -269,88 +280,103 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
         active={subTab}
         onChange={(id) => setSubTab(id as any)}
         tabs={[
-          { id: 'radar', label: '🏆 Radar Xếp Hạng EOD (FTD)' },
-          { id: 'minervini', label: '⚡ Minervini & VCP Pro' },
-          { id: 'gainers', label: '🚀 Lọc CP Tăng Mạnh' },
+          {
+            id: 'radar',
+            label: 'Radar Xếp Hạng EOD (FTD)',
+            icon: <Radar className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'minervini',
+            label: 'Minervini & VCP Pro',
+            icon: <Zap className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
+          {
+            id: 'gainers',
+            label: 'Lọc CP Tăng Mạnh',
+            icon: <TrendingUp className="w-3.5 h-3.5" strokeWidth={2} />,
+          },
         ]}
       />
 
       {/* 3.1 RADAR EOD */}
       {subTab === 'radar' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-1">
-              <FieldLabel label="MA Nhanh">
-                <input
-                  type="number"
-                  min={5}
-                  max={50}
-                  value={maFast}
-                  onChange={(e) => setMaFast(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-1">
+                <FieldLabel label="MA Nhanh">
+                  <input
+                    type="number"
+                    min={5}
+                    max={50}
+                    value={maFast}
+                    onChange={(e) => setMaFast(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-1">
+                <FieldLabel label="MA Trung">
+                  <input
+                    type="number"
+                    min={20}
+                    max={100}
+                    value={maMid}
+                    onChange={(e) => setMaMid(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Min Vol">
+                  <input
+                    type="number"
+                    min={0}
+                    step={50000}
+                    value={minVol}
+                    onChange={(e) => setMinVol(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2 flex items-center h-9">
+                <label className="inline-flex items-center gap-2 text-[13px] font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useFtd}
+                    onChange={(e) => setUseFtd(e.target.checked)}
+                    className="w-4 h-4 rounded accent-sky-600"
+                  />
+                  Bật FTD
+                </label>
+              </div>
+              <div className="md:col-span-3">
+                <FieldLabel label="Chuẩn FTD">
+                  <select
+                    value={ftdMode}
+                    disabled={!useFtd}
+                    onChange={(e) => setFtdMode(Number(e.target.value))}
+                    className={inputCls}
+                  >
+                    <option value={0}>Nâng cao (Vol &gt; MA20)</option>
+                    <option value={1}>Tiêu chuẩn (Vol &gt; Hôm trước)</option>
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <PrimaryButton onClick={runRadar} loading={radarLoading} className="w-full">
+                  {!radarLoading && <Radar className="w-4 h-4" />}
+                  Quét Thị Trường EOD
+                </PrimaryButton>
+              </div>
             </div>
-            <div className="md:col-span-1">
-              <FieldLabel label="MA Trung">
-                <input
-                  type="number"
-                  min={20}
-                  max={100}
-                  value={maMid}
-                  onChange={(e) => setMaMid(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Min Vol">
-                <input
-                  type="number"
-                  min={0}
-                  step={50000}
-                  value={minVol}
-                  onChange={(e) => setMinVol(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2 flex items-center h-[36px]">
-              <label className="inline-flex items-center gap-2 text-[13px] font-bold text-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useFtd}
-                  onChange={(e) => setUseFtd(e.target.checked)}
-                  className="w-4 h-4 accent-[#0284c7]"
-                />
-                Bật FTD
-              </label>
-            </div>
-            <div className="md:col-span-3">
-              <FieldLabel label="Chuẩn FTD">
-                <select
-                  value={ftdMode}
-                  disabled={!useFtd}
-                  onChange={(e) => setFtdMode(Number(e.target.value))}
-                  className={inputCls}
-                >
-                  <option value={0}>Nâng cao (Vol &gt; MA20)</option>
-                  <option value={1}>Tiêu chuẩn (Vol &gt; Hôm trước)</option>
-                </select>
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-3">
-              <PrimaryButton onClick={runRadar} loading={radarLoading} className="w-full">
-                📡 Quét Thị Trường EOD
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
           {radarLoading && <LoadingBar text="Đang quét Radar EOD toàn sàn từ SSI..." />}
 
           {radarRes && (
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+            <div className="space-y-3.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                 <MetricCard label="Ngày Cập Nhật" value={radarRes.risk.date} />
                 <MetricCard label="Trạng Thái TT" value={radarRes.risk.phase} />
                 <MetricCard label="Tỷ Trọng KN" value={`${Math.round(radarRes.risk.target)}%`} />
@@ -359,48 +385,63 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
                   label="Nỗ Lực Hồi Phục"
                   value={
                     radarRes.risk.isFtd
-                      ? '✅ FTD'
+                      ? 'Đạt FTD'
                       : radarRes.risk.rally > 0
                       ? `Ngày ${radarRes.risk.rally}`
                       : 'Chưa tạo đáy'
                   }
+                  deltaPositive={radarRes.risk.isFtd ? true : null}
                 />
                 <MetricCard label="Risk Score" value={fmtNum(radarRes.risk.risk, 1)} />
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <div className="lg:col-span-4 bg-white border border-slate-200 rounded-[10px] p-3">
-                  <h4 className="font-bold text-[15px] text-slate-900 mb-2">🏆 Top Ngành Dẫn Dắt</h4>
+                <SectionCard className="lg:col-span-4 p-3.5">
+                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
+                    <Trophy className="w-4 h-4 text-amber-500" />
+                    Top Ngành Dẫn Dắt
+                  </h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-[13px] border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
+                      <thead className={tableHeadCls}>
+                        <tr className="text-left">
                           <th className="py-2 px-2.5">Ngành</th>
                           <th className="py-2 px-2.5 text-right">Sức Mạnh</th>
                           <th className="py-2 px-2.5 text-right">Số Mã &gt; MA</th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                         {radarRes.sectors.map((s: any) => (
-                          <tr key={s.industry} className="border-b border-slate-100 hover:bg-slate-50">
-                            <td className="py-2 px-2.5 font-semibold">{s.industry}</td>
-                            <td className={`py-2 px-2.5 text-right tabular-nums ${colorPctStrengthClass(s.strength)}`}>
+                          <tr key={s.industry} className={tableRowCls}>
+                            <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
+                              {s.industry}
+                            </td>
+                            <td
+                              className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorPctStrengthClass(
+                                s.strength
+                              )}`}
+                            >
                               {fmtNum(s.strength, 1)}%
                             </td>
-                            <td className="py-2 px-2.5 text-right tabular-nums">{s.ratioText}</td>
+                            <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
+                              {s.ratioText}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                </div>
+                </SectionCard>
 
-                <div className="lg:col-span-8 bg-white border border-slate-200 rounded-[10px] p-3">
-                  <h4 className="font-bold text-[15px] text-slate-900 mb-2">🚀 Top Cổ Phiếu Nổi Bật</h4>
+                <SectionCard className="lg:col-span-8 p-3.5">
+                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
+                    <TrendingUp className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    Top Cổ Phiếu Nổi Bật
+                  </h4>
                   <div className="overflow-x-auto">
                     <table className="w-full text-[13px] border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
+                      <thead className={tableHeadCls}>
+                        <tr className="text-left">
                           <th className="py-2 px-2.5">Mã CP</th>
                           <th className="py-2 px-2.5">Ngành</th>
                           <th className="py-2 px-2.5 text-right">Giá</th>
@@ -409,23 +450,37 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
                           <th className="py-2 px-2.5">Tín Hiệu</th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                         {radarRes.stocks.map((st: any) => (
-                          <tr key={st.symbol} className="border-b border-slate-100 hover:bg-slate-50">
-                            <td className="py-2 px-2.5 font-bold text-slate-900">{st.symbol}</td>
-                            <td className="py-2 px-2.5 text-slate-600">{st.industry}</td>
-                            <td className="py-2 px-2.5 text-right tabular-nums">{fmtNum(st.price, 2)}</td>
-                            <td className="py-2 px-2.5 text-right tabular-nums">{fmtInt(st.volume)}</td>
-                            <td className={`py-2 px-2.5 text-right tabular-nums ${colorVolScoreClass(st.volRatio)}`}>
+                          <tr key={st.symbol} className={tableRowCls}>
+                            <td className="py-2 px-2.5 font-bold font-mono text-slate-900 dark:text-slate-100">
+                              {st.symbol}
+                            </td>
+                            <td className="py-2 px-2.5 text-slate-600 dark:text-slate-400">
+                              {st.industry}
+                            </td>
+                            <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">
+                              {fmtNum(st.price, 2)}
+                            </td>
+                            <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                              {fmtInt(st.volume)}
+                            </td>
+                            <td
+                              className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorVolScoreClass(
+                                st.volRatio
+                              )}`}
+                            >
                               {fmtNum(st.volRatio, 2)}x
                             </td>
-                            <td className={`py-2 px-2.5 ${colorStatusClass(st.signal)}`}>{st.signal}</td>
+                            <td className={`py-2 px-2.5 ${colorStatusClass(st.signal)}`}>
+                              {st.signal}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                </div>
+                </SectionCard>
               </div>
             </div>
           )}
@@ -434,75 +489,87 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
 
       {/* 3.2 MINERVINI & VCP PRO */}
       {subTab === 'minervini' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-3">
-              <FieldLabel label="Từ ngày">
-                <input
-                  type="date"
-                  value={minStart}
-                  onChange={(e) => setMinStart(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-3">
+                <FieldLabel label="Từ ngày">
+                  <input
+                    type="date"
+                    value={minStart}
+                    onChange={(e) => setMinStart(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-3">
+                <FieldLabel label="Đến ngày">
+                  <input
+                    type="date"
+                    value={minEnd}
+                    onChange={(e) => setMinEnd(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="RS Min">
+                  <input
+                    type="number"
+                    min={50}
+                    max={99}
+                    value={minRs}
+                    onChange={(e) => setMinRs(Number(e.target.value))}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-4">
+                <PrimaryButton onClick={runMinervini} loading={minLoading} className="w-full">
+                  {!minLoading && <Zap className="w-4 h-4" />}
+                  Quét Siêu Cổ Phiếu Minervini
+                </PrimaryButton>
+              </div>
             </div>
-            <div className="md:col-span-3">
-              <FieldLabel label="Đến ngày">
-                <input
-                  type="date"
-                  value={minEnd}
-                  onChange={(e) => setMinEnd(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="RS Min">
-                <input
-                  type="number"
-                  min={50}
-                  max={99}
-                  value={minRs}
-                  onChange={(e) => setMinRs(Number(e.target.value))}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-4">
-              <PrimaryButton onClick={runMinervini} loading={minLoading} className="w-full">
-                🚀 Quét Siêu Cổ Phiếu Minervini
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
           {minLoading && (
             <LoadingBar text="Đang tải dữ liệu và tính RS Rating toàn sàn HOSE..." />
           )}
 
           {minRes && (
-            <div className="space-y-3">
+            <div className="space-y-3.5">
               {minRes.breadth?.length > 0 && (() => {
                 const lb = minRes.breadth[minRes.breadth.length - 1];
                 const p200 = lb.pctAboveMa200;
                 const pbot = lb.pctBottoming;
                 if (p200 >= 50) {
                   return (
-                    <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-[13.5px]">
-                      🟢 <strong>UPTREND XÁC NHẬN</strong> ({fmtNum(p200, 1)}% cổ phiếu &gt; MA200)
+                    <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800/60 text-emerald-900 dark:text-emerald-200 text-[13px]">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span>
+                        <strong>UPTREND XÁC NHẬN</strong> ({fmtNum(p200, 1)}% cổ phiếu &gt; MA200)
+                      </span>
                     </div>
                   );
                 }
                 if (p200 <= 20) {
                   return (
-                    <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-900 text-[13.5px]">
-                      🔴 <strong>VÙNG HOẢNG LOẠN / DÒ ĐÁY</strong> ({fmtNum(p200, 1)}% &gt; MA200 |{' '}
-                      {fmtNum(pbot, 1)}% sát đáy 52T)
+                    <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-red-50/90 dark:bg-red-950/35 border border-red-200 dark:border-red-900/60 text-red-900 dark:text-red-200 text-[13px]">
+                      <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+                      <span>
+                        <strong>VÙNG HOẢNG LOẠN / DÒ ĐÁY</strong> ({fmtNum(p200, 1)}% &gt; MA200 ·{' '}
+                        {fmtNum(pbot, 1)}% sát đáy 52T)
+                      </span>
                     </div>
                   );
                 }
                 return (
-                  <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[13.5px]">
-                    🟡 <strong>THỊ TRƯỜNG PHÂN HÓA</strong> ({fmtNum(p200, 1)}% &gt; MA200)
+                  <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl bg-amber-50/90 dark:bg-amber-950/35 border border-amber-200 dark:border-amber-800/60 text-amber-900 dark:text-amber-200 text-[13px]">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span>
+                      <strong>THỊ TRƯỜNG PHÂN HÓA</strong> ({fmtNum(p200, 1)}% &gt; MA200)
+                    </span>
                   </div>
                 );
               })()}
@@ -511,30 +578,42 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
                 active={minSubTab}
                 onChange={(id) => setMinSubTab(id as any)}
                 tabs={[
-                  { id: 'stocks', label: `🏆 Siêu Cổ Phiếu (${minRes.screened.length})` },
-                  { id: 'diag', label: '🔍 Chẩn Đoán Chu Kỳ & Chart VCP' },
-                  { id: 'breadth', label: '🌊 Độ Rộng Thị Trường' },
+                  {
+                    id: 'stocks',
+                    label: `Siêu Cổ Phiếu (${minRes.screened.length})`,
+                    icon: <Trophy className="w-3.5 h-3.5" strokeWidth={2} />,
+                  },
+                  {
+                    id: 'diag',
+                    label: 'Chẩn Đoán Chu Kỳ & VCP',
+                    icon: <Search className="w-3.5 h-3.5" strokeWidth={2} />,
+                  },
+                  {
+                    id: 'breadth',
+                    label: 'Độ Rộng Thị Trường',
+                    icon: <Waves className="w-3.5 h-3.5" strokeWidth={2} />,
+                  },
                 ]}
               />
 
               {minSubTab === 'stocks' && (
-                <div className="bg-white border border-slate-200 rounded-[10px] p-2 overflow-x-auto">
+                <SectionCard className="p-2 overflow-x-auto">
                   {minRes.screened.length > 0 ? (
                     <table className="w-full text-[13px] border-collapse">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
-                          <th className="py-2 px-3">Mã CP</th>
-                          <th className="py-2 px-3">Ngành</th>
-                          <th className="py-2 px-3 text-right">Giá</th>
-                          <th className="py-2 px-3 text-right">RS Rating</th>
-                          <th className="py-2 px-3">Chu Kỳ</th>
-                          <th className="py-2 px-3 text-right">% Đỉnh 52T</th>
-                          <th className="py-2 px-3">Mô Hình VCP</th>
-                          <th className="py-2 px-3 text-right">Pivot</th>
-                          <th className="py-2 px-3">Trạng Thái Pivot</th>
+                      <thead className={tableHeadCls}>
+                        <tr className="text-left">
+                          <th className="py-2.5 px-3">Mã CP</th>
+                          <th className="py-2.5 px-3">Ngành</th>
+                          <th className="py-2.5 px-3 text-right">Giá</th>
+                          <th className="py-2.5 px-3 text-right">RS Rating</th>
+                          <th className="py-2.5 px-3">Chu Kỳ</th>
+                          <th className="py-2.5 px-3 text-right">% Đỉnh 52T</th>
+                          <th className="py-2.5 px-3">Mô Hình VCP</th>
+                          <th className="py-2.5 px-3 text-right">Pivot</th>
+                          <th className="py-2.5 px-3">Trạng Thái Pivot</th>
                         </tr>
                       </thead>
-                      <tbody>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                         {minRes.screened.map((r: any) => (
                           <tr
                             key={r.symbol}
@@ -542,35 +621,51 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
                               setDiagSym(r.symbol);
                               setMinSubTab('diag');
                             }}
-                            className="border-b border-slate-100 hover:bg-sky-50/60 cursor-pointer"
+                            className="hover:bg-sky-50/70 dark:hover:bg-sky-950/35 cursor-pointer transition-colors"
                           >
-                            <td className="py-2 px-3 font-bold text-[#0284c7]">{r.symbol}</td>
-                            <td className="py-2 px-3">{r.industry}</td>
-                            <td className="py-2 px-3 text-right tabular-nums">{fmtNum(r.price, 2)}</td>
-                            <td className={`py-2 px-3 text-right tabular-nums ${colorRsClass(r.rsRating)}`}>
+                            <td className="py-2 px-3 font-bold font-mono text-sky-600 dark:text-sky-400">
+                              {r.symbol}
+                            </td>
+                            <td className="py-2 px-3 text-slate-700 dark:text-slate-300">
+                              {r.industry}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">
+                              {fmtNum(r.price, 2)}
+                            </td>
+                            <td
+                              className={`py-2 px-3 text-right font-mono tabular-nums ${colorRsClass(
+                                r.rsRating
+                              )}`}
+                            >
                               {r.rsRating}
                             </td>
                             <td className={`py-2 px-3 ${colorStatusClass(r.phase)}`}>{r.phase}</td>
-                            <td className="py-2 px-3 text-right tabular-nums">{fmtSigned(r.pctFromPeak, 1, '%')}</td>
-                            <td className="py-2 px-3">{r.vcpPattern}</td>
-                            <td className="py-2 px-3 text-right tabular-nums">
+                            <td className="py-2 px-3 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">
+                              {fmtSigned(r.pctFromPeak, 1, '%')}
+                            </td>
+                            <td className="py-2 px-3 text-slate-700 dark:text-slate-300">
+                              {r.vcpPattern}
+                            </td>
+                            <td className="py-2 px-3 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">
                               {r.pivot !== null ? fmtNum(r.pivot, 2) : '—'}
                             </td>
-                            <td className={`py-2 px-3 ${colorStatusClass(r.pivotStatus)}`}>{r.pivotStatus}</td>
+                            <td className={`py-2 px-3 ${colorStatusClass(r.pivotStatus)}`}>
+                              {r.pivotStatus}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   ) : (
-                    <div className="p-4 text-sm text-slate-600">
+                    <div className="p-5 text-center text-[13px] text-slate-500 dark:text-slate-400">
                       Không có mã nào thỏa mãn toàn bộ 8 tiêu chí Trend Template ở thời điểm này.
                     </div>
                   )}
-                </div>
+                </SectionCard>
               )}
 
               {minSubTab === 'diag' && minRes.allSymbols?.length > 0 && (
-                <div className="space-y-3">
+                <div className="space-y-3.5">
                   <div className="max-w-xs">
                     <FieldLabel label="Chọn cổ phiếu kiểm tra">
                       <select
@@ -590,28 +685,35 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
                   {activeDiag && (
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                       <div className="lg:col-span-4 space-y-3">
-                        <div
-                          className="p-3 bg-white rounded-lg border border-slate-200 border-l-4"
-                          style={{ borderLeftColor: activeDiag.phaseColor }}
-                        >
-                          <div
-                            className="font-bold text-[14.5px] mb-1"
-                            style={{ color: activeDiag.phaseColor }}
-                          >
-                            {activeDiag.phaseTitle}
+                        <SectionCard className="p-3.5">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: activeDiag.phaseColor }}
+                            />
+                            <div
+                              className="font-bold text-[14.5px]"
+                              style={{ color: activeDiag.phaseColor }}
+                            >
+                              {activeDiag.phaseTitle}
+                            </div>
                           </div>
-                          <div className="text-[13px] text-slate-700">{activeDiag.phaseDesc}</div>
-                        </div>
+                          <div className="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                            {activeDiag.phaseDesc}
+                          </div>
+                        </SectionCard>
 
                         {activeDiag.vcp && (
-                          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-[13px] text-emerald-950 space-y-1">
+                          <div className="p-3.5 bg-emerald-50/90 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800/60 rounded-xl text-[13px] text-emerald-950 dark:text-emerald-200 space-y-1.5">
                             <div>
                               <strong>VCP {activeDiag.vcp.num_contractions}T:</strong>{' '}
-                              {activeDiag.vcp.ranges.map((x: number) => `${x}%`).join(' -> ')}
+                              <span className="font-mono">
+                                {activeDiag.vcp.ranges.map((x: number) => `${x}%`).join(' → ')}
+                              </span>
                             </div>
                             <div>
                               <strong>Pivot:</strong>{' '}
-                              <code className="bg-white px-1.5 py-0.5 rounded font-bold">
+                              <code className="bg-white dark:bg-slate-900 px-1.5 py-0.5 rounded font-mono font-bold text-emerald-700 dark:text-emerald-300">
                                 {fmtNum(activeDiag.vcp.buy_point, 2)}
                               </code>{' '}
                               ({activeDiag.vcp.status})
@@ -619,41 +721,70 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
                           </div>
                         )}
 
-                        <div className="p-3.5 bg-white border border-slate-200 rounded-lg text-[13px] space-y-1.5">
-                          <div className="font-bold text-slate-900 mb-2">📋 Minervini Trend Template:</div>
-                          <div>
-                            Giá vs MA50 ({fmtNum(activeDiag.ma50, 2)}):{' '}
-                            <strong>
-                              {activeDiag.ma50 && activeDiag.close > activeDiag.ma50 ? '🟢 Trên' : '🔴 Dưới'}
-                            </strong>
+                        <SectionCard className="p-3.5 text-[13px] space-y-2">
+                          <div className="inline-flex items-center gap-1.5 font-bold text-slate-900 dark:text-slate-100 mb-1">
+                            <ClipboardCheck className="w-4 h-4 text-sky-600 dark:text-sky-400" />
+                            Minervini Trend Template
                           </div>
-                          <div>
-                            Giá vs MA150 ({fmtNum(activeDiag.ma150, 2)}):{' '}
-                            <strong>
-                              {activeDiag.ma150 && activeDiag.close > activeDiag.ma150 ? '🟢 Trên' : '🔴 Dưới'}
-                            </strong>
+                          {[
+                            { lbl: 'MA50', val: activeDiag.ma50 },
+                            { lbl: 'MA150', val: activeDiag.ma150 },
+                            { lbl: 'MA200', val: activeDiag.ma200 },
+                          ].map((row) => {
+                            const above = Boolean(row.val && activeDiag.close > row.val);
+                            return (
+                              <div
+                                key={row.lbl}
+                                className="flex items-center justify-between text-slate-600 dark:text-slate-300"
+                              >
+                                <span>
+                                  Giá vs {row.lbl}{' '}
+                                  <span className="font-mono text-slate-500 dark:text-slate-400">
+                                    ({fmtNum(row.val, 2)})
+                                  </span>
+                                </span>
+                                <span
+                                  className={`inline-flex items-center gap-1.5 font-semibold ${
+                                    above
+                                      ? 'text-emerald-600 dark:text-emerald-400'
+                                      : 'text-red-600 dark:text-red-400'
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full ${
+                                      above ? 'bg-emerald-500' : 'bg-red-500'
+                                    }`}
+                                  />
+                                  {above ? 'Trên' : 'Dưới'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                          <div className="pt-1.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-slate-600 dark:text-slate-300">
+                            <span>Đỉnh 52T</span>
+                            <span className="font-mono tabular-nums">
+                              <strong className="text-slate-900 dark:text-slate-100">
+                                {fmtNum(activeDiag.peak52w, 2)}
+                              </strong>{' '}
+                              ({fmtSigned(activeDiag.pctFromPeak, 1, '%')})
+                            </span>
                           </div>
-                          <div>
-                            Giá vs MA200 ({fmtNum(activeDiag.ma200, 2)}):{' '}
-                            <strong>
-                              {activeDiag.ma200 && activeDiag.close > activeDiag.ma200 ? '🟢 Trên' : '🔴 Dưới'}
-                            </strong>
+                          <div className="flex items-center justify-between text-slate-600 dark:text-slate-300">
+                            <span>Đáy 52T</span>
+                            <span className="font-mono tabular-nums">
+                              <strong className="text-slate-900 dark:text-slate-100">
+                                {fmtNum(activeDiag.bottom52w, 2)}
+                              </strong>{' '}
+                              ({fmtSigned(activeDiag.pctFromBottom, 1, '%')})
+                            </span>
                           </div>
-                          <div>
-                            Đỉnh 52T: <strong>{fmtNum(activeDiag.peak52w, 2)}</strong> (
-                            {fmtSigned(activeDiag.pctFromPeak, 1, '%')})
-                          </div>
-                          <div>
-                            Đáy 52T: <strong>{fmtNum(activeDiag.bottom52w, 2)}</strong> (
-                            {fmtSigned(activeDiag.pctFromBottom, 1, '%')})
-                          </div>
-                          <div>
-                            <strong>RS Rating:</strong>{' '}
-                            <span className={colorRsClass(activeDiag.rsRating)}>
+                          <div className="flex items-center justify-between text-slate-600 dark:text-slate-300">
+                            <strong>RS Rating</strong>
+                            <span className={`font-mono ${colorRsClass(activeDiag.rsRating)}`}>
                               {activeDiag.rsRating} / 99
                             </span>
                           </div>
-                        </div>
+                        </SectionCard>
                       </div>
 
                       <div className="lg:col-span-8">
@@ -700,24 +831,30 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
               {minSubTab === 'breadth' && minRes.breadth?.length > 0 && (() => {
                 const lb = minRes.breadth[minRes.breadth.length - 1];
                 return (
-                  <div className="space-y-3">
+                  <div className="space-y-3.5">
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       <MetricCard label="Giá TB HOSE" value={fmtNum(lb.avgPrice, 1)} />
-                      <MetricCard label="Độ Rộng (> MA200)" value={`${fmtNum(lb.pctAboveMa200, 1)}%`} />
-                      <MetricCard label="% Sát Đáy 52T" value={`${fmtNum(lb.pctBottoming, 1)}%`} />
+                      <MetricCard
+                        label="Độ Rộng (> MA200)"
+                        value={`${fmtNum(lb.pctAboveMa200, 1)}%`}
+                      />
+                      <MetricCard
+                        label="% Sát Đáy 52T"
+                        value={`${fmtNum(lb.pctBottoming, 1)}%`}
+                      />
                       <MetricCard
                         label="Sụt Giảm Từ Đỉnh"
                         value={`-${fmtNum(minRes.stats.pctDrop, 1)}%`}
                       />
                     </div>
                     {breadthPlot && (
-                      <div className="bg-white border border-slate-200 rounded-[10px] p-2">
+                      <SectionCard className="p-2.5">
                         <PlotlyChart
                           data={breadthPlot.data}
                           layout={breadthPlot.layout}
                           height={420}
                         />
-                      </div>
+                      </SectionCard>
                     )}
                   </div>
                 );
@@ -729,131 +866,156 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
 
       {/* 3.3 TOP GAINERS */}
       {subTab === 'gainers' && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end bg-white border border-slate-200 rounded-[10px] p-3">
-            <div className="md:col-span-2">
-              <FieldLabel label="Sàn">
-                <select
-                  value={gExchange}
-                  onChange={(e) => setGExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM' | 'ALL')}
-                  className={inputCls}
-                >
-                  <option value="HOSE">HOSE</option>
-                  <option value="HNX">HNX</option>
-                  <option value="UPCOM">UPCOM</option>
-                  <option value="ALL">Tất cả 3 sàn</option>
-                </select>
-              </FieldLabel>
+        <div className="space-y-3.5">
+          <SectionCard className="p-3.5">
+            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
+              <div className="md:col-span-2">
+                <FieldLabel label="Sàn">
+                  <select
+                    value={gExchange}
+                    onChange={(e) =>
+                      setGExchange(e.target.value as 'HOSE' | 'HNX' | 'UPCOM' | 'ALL')
+                    }
+                    className={inputCls}
+                  >
+                    <option value="HOSE">HOSE</option>
+                    <option value="HNX">HNX</option>
+                    <option value="UPCOM">UPCOM</option>
+                    <option value="ALL">Tất cả 3 sàn</option>
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Từ ngày">
+                  <input
+                    type="date"
+                    value={gStart}
+                    onChange={(e) => setGStart(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Đến ngày">
+                  <input
+                    type="date"
+                    value={gEnd}
+                    onChange={(e) => setGEnd(e.target.value)}
+                    className={inputCls}
+                  />
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <FieldLabel label="Nhóm ngành">
+                  <select
+                    value={gInd}
+                    onChange={(e) => setGInd(e.target.value)}
+                    className={inputCls}
+                  >
+                    {industryOptions.map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                      </option>
+                    ))}
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-1">
+                <FieldLabel label="Top">
+                  <select
+                    value={gTop}
+                    onChange={(e) => setGTop(Number(e.target.value))}
+                    className={inputCls}
+                  >
+                    {[10, 15, 20, 30, 50].map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-1">
+                <FieldLabel label="Xếp hạng">
+                  <select
+                    value={gRank}
+                    onChange={(e) => setGRank(e.target.value as any)}
+                    className={inputCls}
+                  >
+                    <option value="combo">Kết hợp</option>
+                    <option value="change">% Đổi</option>
+                    <option value="low">% Hồi</option>
+                  </select>
+                </FieldLabel>
+              </div>
+              <div className="md:col-span-2">
+                <PrimaryButton onClick={runGainers} loading={gainersLoading} className="w-full">
+                  {!gainersLoading && <TrendingUp className="w-4 h-4" />}
+                  Lọc Cổ Phiếu
+                </PrimaryButton>
+              </div>
             </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Từ ngày">
-                <input
-                  type="date"
-                  value={gStart}
-                  onChange={(e) => setGStart(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Đến ngày">
-                <input
-                  type="date"
-                  value={gEnd}
-                  onChange={(e) => setGEnd(e.target.value)}
-                  className={inputCls}
-                />
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <FieldLabel label="Nhóm ngành">
-                <select value={gInd} onChange={(e) => setGInd(e.target.value)} className={inputCls}>
-                  {industryOptions.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
-                    </option>
-                  ))}
-                </select>
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-1">
-              <FieldLabel label="Top">
-                <select
-                  value={gTop}
-                  onChange={(e) => setGTop(Number(e.target.value))}
-                  className={inputCls}
-                >
-                  {[10, 15, 20, 30, 50].map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-1">
-              <FieldLabel label="Xếp hạng">
-                <select
-                  value={gRank}
-                  onChange={(e) => setGRank(e.target.value as any)}
-                  className={inputCls}
-                >
-                  <option value="combo">Kết hợp</option>
-                  <option value="change">% Đổi</option>
-                  <option value="low">% Hồi</option>
-                </select>
-              </FieldLabel>
-            </div>
-            <div className="md:col-span-2">
-              <PrimaryButton onClick={runGainers} loading={gainersLoading} className="w-full">
-                🚀 Lọc Cổ Phiếu
-              </PrimaryButton>
-            </div>
-          </div>
+          </SectionCard>
 
           {gainersLoading && <LoadingBar text="Đang tải dữ liệu lọc cổ phiếu tăng mạnh..." />}
 
           {gainersSorted.length > 0 && (
-            <div className="bg-white border border-slate-200 rounded-[10px] p-2 overflow-x-auto">
+            <SectionCard className="p-2 overflow-x-auto">
               <table className="w-full text-[13px] border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-left text-slate-600">
-                    <th className="py-2 px-3">Mã CP</th>
-                    <th className="py-2 px-3">Sàn</th>
-                    <th className="py-2 px-3">Nhóm Ngành</th>
-                    <th className="py-2 px-3 text-right">% Thay Đổi</th>
-                    <th className="py-2 px-3 text-right">% Tăng từ Đáy</th>
-                    <th className="py-2 px-3 text-right">% Giảm từ Đỉnh</th>
-                    <th className="py-2 px-3 text-right">Biên Độ (H/L)</th>
-                    <th className="py-2 px-3 text-right">Ngày đạt đỉnh</th>
+                <thead className={tableHeadCls}>
+                  <tr className="text-left">
+                    <th className="py-2.5 px-3">Mã CP</th>
+                    <th className="py-2.5 px-3">Sàn</th>
+                    <th className="py-2.5 px-3">Nhóm Ngành</th>
+                    <th className="py-2.5 px-3 text-right">% Thay Đổi</th>
+                    <th className="py-2.5 px-3 text-right">% Tăng từ Đáy</th>
+                    <th className="py-2.5 px-3 text-right">% Giảm từ Đỉnh</th>
+                    <th className="py-2.5 px-3 text-right">Biên Độ (H/L)</th>
+                    <th className="py-2.5 px-3 text-right">Ngày đạt đỉnh</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                   {gainersSorted.map((r) => (
-                    <tr key={r.symbol} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="py-2 px-3 font-bold text-slate-900">{r.symbol}</td>
-                      <td className="py-2 px-3 text-[12px] font-semibold text-slate-500">
+                    <tr key={r.symbol} className={tableRowCls}>
+                      <td className="py-2 px-3 font-bold font-mono text-slate-900 dark:text-slate-100">
+                        {r.symbol}
+                      </td>
+                      <td className="py-2 px-3 text-[12px] font-semibold text-sky-600 dark:text-sky-400">
                         {r.exchange || 'HOSE'}
                       </td>
-                      <td className="py-2 px-3 text-slate-600">{r.industry}</td>
-                      <td className={`py-2 px-3 text-right tabular-nums ${colorSignedClass(r.pctChange)}`}>
+                      <td className="py-2 px-3 text-slate-600 dark:text-slate-400">{r.industry}</td>
+                      <td
+                        className={`py-2 px-3 text-right font-mono tabular-nums ${colorSignedClass(
+                          r.pctChange
+                        )}`}
+                      >
                         {fmtSigned(r.pctChange, 2, '%')}
                       </td>
-                      <td className={`py-2 px-3 text-right tabular-nums ${colorSignedClass(r.pctFromLow)}`}>
+                      <td
+                        className={`py-2 px-3 text-right font-mono tabular-nums ${colorSignedClass(
+                          r.pctFromLow
+                        )}`}
+                      >
                         {fmtSigned(r.pctFromLow, 2, '%')}
                       </td>
-                      <td className={`py-2 px-3 text-right tabular-nums ${colorSignedClass(r.pctFromHigh)}`}>
+                      <td
+                        className={`py-2 px-3 text-right font-mono tabular-nums ${colorSignedClass(
+                          r.pctFromHigh
+                        )}`}
+                      >
                         {fmtSigned(r.pctFromHigh, 2, '%')}
                       </td>
-                      <td className="py-2 px-3 text-right tabular-nums text-[#9333ea] font-bold">
+                      <td className="py-2 px-3 text-right font-mono tabular-nums text-violet-600 dark:text-violet-400 font-semibold">
                         {fmtNum(r.amplitude, 2)}%
                       </td>
-                      <td className="py-2 px-3 text-right tabular-nums text-slate-600">{r.peakDate}</td>
+                      <td className="py-2 px-3 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                        {r.peakDate}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
+            </SectionCard>
           )}
         </div>
       )}
