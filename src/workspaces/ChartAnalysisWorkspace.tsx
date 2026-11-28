@@ -6,6 +6,7 @@ import {
   INDUSTRY_GROUPS,
   MA_COLORS,
 } from '../shared/constants';
+import { DateInput } from '../components/DateInput';
 import { DynamicOhlcChart } from '../components/DynamicOhlcChart';
 import { SymbolSearchInput } from '../components/SymbolSearchInput';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
@@ -396,22 +397,12 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
               </div>
               <div className="md:col-span-2">
                 <FieldLabel label="Từ ngày">
-                  <input
-                    type="date"
-                    value={hStart}
-                    onChange={(e) => setHStart(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={hStart} onChange={setHStart} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">
                 <FieldLabel label="Đến ngày">
-                  <input
-                    type="date"
-                    value={hEnd}
-                    onChange={(e) => setHEnd(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={hEnd} onChange={setHEnd} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-1">
@@ -597,12 +588,7 @@ export const ChartAnalysisWorkspace: React.FC<Props> = ({ isActive = true }) => 
               </div>
               <div className="md:col-span-3">
                 <FieldLabel label="Ngày khớp lệnh">
-                  <input
-                    type="date"
-                    value={inDate}
-                    onChange={(e) => setInDate(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={inDate} onChange={setInDate} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">

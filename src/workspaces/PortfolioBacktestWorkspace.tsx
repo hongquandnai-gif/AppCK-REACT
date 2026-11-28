@@ -17,6 +17,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { HARDCODED_HOSE_INDUSTRIES_MAPPING, INDUSTRY_GROUPS } from '../shared/constants';
+import { DateInput } from '../components/DateInput';
 import { PlotlyChart } from '../components/PlotlyChart';
 import { SymbolSearchInput } from '../components/SymbolSearchInput';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
@@ -38,6 +39,7 @@ import {
   colorSignedClass,
   colorStatusClass,
   fmtInt,
+  fmtIsoToDdMmYyyy,
   fmtNum,
   fmtSigned,
   fmtSignedInt,
@@ -504,12 +506,7 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ isActive = true })
                   </div>
                   <div className="md:col-span-2">
                     <FieldLabel label="Ngày mua">
-                      <input
-                        type="date"
-                        value={newBdate}
-                        onChange={(e) => setNewBdate(e.target.value)}
-                        className={inputCls}
-                      />
+                      <DateInput value={newBdate} onChange={setNewBdate} />
                     </FieldLabel>
                   </div>
                   <div className="md:col-span-2">
@@ -649,7 +646,7 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ isActive = true })
                             {r.symbol}
                           </td>
                           <td className="py-2 px-2.5 font-mono text-slate-500 dark:text-slate-400">
-                            {r.buyDate}
+                            {fmtIsoToDdMmYyyy(r.buyDate)}
                           </td>
                           <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
                             {fmtNum(r.buyPrice, 2)}
@@ -737,20 +734,10 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ isActive = true })
               </FieldLabel>
               <div className="grid grid-cols-2 gap-2">
                 <FieldLabel label="Từ ngày">
-                  <input
-                    type="date"
-                    value={btStart}
-                    onChange={(e) => setBtStart(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={btStart} onChange={setBtStart} />
                 </FieldLabel>
                 <FieldLabel label="Đến ngày">
-                  <input
-                    type="date"
-                    value={btEnd}
-                    onChange={(e) => setBtEnd(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={btEnd} onChange={setBtEnd} />
                 </FieldLabel>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -1201,10 +1188,10 @@ export const PortfolioBacktestWorkspace: React.FC<Props> = ({ isActive = true })
                                 {c.symbol}
                               </td>
                               <td className="py-1.5 px-2 font-mono text-slate-500 dark:text-slate-400">
-                                {c.buyDate}
+                                {fmtIsoToDdMmYyyy(c.buyDate)}
                               </td>
                               <td className="py-1.5 px-2 font-mono text-slate-500 dark:text-slate-400">
-                                {c.sellDate}
+                                {fmtIsoToDdMmYyyy(c.sellDate)}
                               </td>
                               <td className="py-1.5 px-2 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
                                 {fmtNum(c.buyPrice, 2)}

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download, RefreshCw, Search } from 'lucide-react';
+import { DateInput } from '../components/DateInput';
 import { PlotlyChart } from '../components/PlotlyChart';
 import {
   ErrorBanner,
@@ -20,6 +21,7 @@ import { patchForeignTradingWithTicks } from '../utils/livePatch';
 import {
   colorSignedClass,
   downloadCsv,
+  fmtDisplayDateOrTime,
   fmtInt,
   fmtNum,
   fmtSigned,
@@ -486,12 +488,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
 
           <div className="lg:col-span-2">
             <FieldLabel label="Ngày giao dịch">
-              <input
-                type="date"
-                value={targetDate}
-                onChange={(e) => setTargetDate(e.target.value)}
-                className={inputCls}
-              />
+              <DateInput value={targetDate} onChange={setTargetDate} />
             </FieldLabel>
           </div>
 
@@ -523,7 +520,7 @@ export const ForeignTradingPanel: React.FC<Props> = ({ isActive }) => {
                   <span className="text-slate-300 dark:text-slate-700">·</span>
                   <span className="inline-flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400 font-mono">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    SSI WS ({data.syncTime})
+                    SSI WS ({fmtDisplayDateOrTime(data.syncTime)})
                   </span>
                 </>
               )}

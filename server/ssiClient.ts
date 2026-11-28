@@ -120,6 +120,19 @@ export interface ForeignRecord {
   currentRoom: number;
 }
 
+export interface VnIndexImpactRecord {
+  code: string;
+  tradingDate: string;
+  outstandingShares: number;
+  weight: number;
+  bmv: number;
+  prevCmv: number;
+  cmv: number;
+  lastPrice: number;
+  prevPrice: number;
+  contributionScore: number;
+}
+
 const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
 
 export function vnNowParts(nowMs = Date.now()) {
@@ -959,6 +972,69 @@ export async function fetchForeignStocksByDate(
 }
 
 // ==============================================================================
+// 2.7 VNINDEX LEADER / LAGGARD (INDEX IMPACT PER STOCK)
+// ==============================================================================
+let vnIndexImpactCache: { ts: number; data: VnIndexImpactRecord[] } | null = null;
+const VNINDEX_IMPACT_CACHE_TTL = 30_000;
+
+export async function fetchVnIndexLeaderLaggard(
+  forceRefresh = false
+): Promise<VnIndexImpactRecord[]> {
+  const now = Date.now();
+  if (!forceRefresh && vnIndexImpactCache && now - vnIndexImpactCache.ts < VNINDEX_IMPACT_CACHE_TTL) {
+    return vnIndexImpactCache.data;
+  }
+
+  const url =
+    'https://api-finfo.vndirect.com.vn/v4/leader_laggard?q=indexCode:VNINDEX&size=500';
+  const payload = await fetchVndirectJson(url, 12000);
+  const items: any[] = Array.isArray(payload?.data) ? payload.data : [];
+
+  const seen = new Set<string>();
+  const rows: VnIndexImpactRecord[] = [];
+  for (const item of items) {
+    const code = String(item?.code || '').trim().toUpperCase();
+    const tradingDate = String(item?.tradingDate || '').trim();
+    if (!code || !tradingDate || seen.has(code)) continue;
+
+    const outstandingShares = Number(item?.outstandingShares ?? 0);
+    const weight = Number(item?.weight ?? 0);
+    const bmv = Number(item?.bmv ?? 0);
+    const prevCmv = Number(item?.prevCmv ?? 0);
+    const cmv = Number(item?.cmv ?? 0);
+    const lastPrice = Number(item?.lastPrice ?? 0);
+    const contributionScore = Number(item?.contributionScore ?? 0);
+    if (!Number.isFinite(bmv) || bmv <= 0 || !Number.isFinite(outstandingShares) || outstandingShares <= 0) {
+      continue;
+    }
+
+    const prevPrice =
+      Number.isFinite(prevCmv) && prevCmv > 0
+        ? prevCmv / (outstandingShares * 1000)
+        : lastPrice;
+
+    seen.add(code);
+    rows.push({
+      code,
+      tradingDate,
+      outstandingShares,
+      weight: Number.isFinite(weight) ? weight : 0,
+      bmv,
+      prevCmv: Number.isFinite(prevCmv) ? prevCmv : 0,
+      cmv: Number.isFinite(cmv) ? cmv : 0,
+      lastPrice: Number.isFinite(lastPrice) ? lastPrice : 0,
+      prevPrice: Number.isFinite(prevPrice) ? prevPrice : 0,
+      contributionScore: Number.isFinite(contributionScore) ? contributionScore : 0,
+    });
+  }
+
+  if (rows.length > 0) {
+    vnIndexImpactCache = { ts: now, data: rows };
+  }
+  return rows;
+}
+
+// ==============================================================================
 // 3. OHLCV FETCHING (SSI PRIMARY -> UNIVERSAL VNDIRECT FALLBACK)
 // ==============================================================================
 function median(vals: number[]): number {
@@ -1160,6 +1236,7 @@ export function clearAllCaches() {
   indexStatsCache.clear();
   foreignIdxCache.clear();
   foreignStocksCache.clear();
+  vnIndexImpactCache = null;
 }
 
 export async function fetchBatchOhlcvSsi(

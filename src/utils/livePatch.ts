@@ -809,3 +809,123 @@ export function patchForeignTradingWithTicks(
     stocks: nextStocks,
   };
 }
+
+/**
+ * Patches VNINDEX per-stock index impact (contributionScore) in-place from live SSI WS ticks
+ * using the exact HOSE divisor formula: impact = (last * 1000 * outstandingShares - prevCmv) / bmv.
+ */
+export function patchVnIndexImpactWithTicks(
+  impactResp: any,
+  ticks: Record<string, LiveTickDto>
+): any {
+  if (!impactResp || !Array.isArray(impactResp.stocks) || !impactResp.stocks.length) {
+    return impactResp;
+  }
+
+  let changed = false;
+  let hasSsiWs = false;
+  let latestTime = impactResp.syncTime || '';
+
+  const nextStocks = impactResp.stocks.map((s: any) => {
+    const tick = ticks[s.symbol];
+    if (!tick || !Number.isFinite(tick.last) || tick.last <= 0) return s;
+
+    if (tick.liveSource === 'SSI_WS') hasSsiWs = true;
+
+    const nextPrice = Number(tick.last.toFixed(2));
+    const prevPrice = s.prevPrice > 0 ? s.prevPrice : tick.ref || nextPrice;
+    const prevCmv =
+      s.prevCmv > 0
+        ? s.prevCmv
+        : prevPrice > 0 && s.outstandingShares > 0
+        ? prevPrice * 1000 * s.outstandingShares
+        : 0;
+
+    const nextImpact =
+      s.bmv > 0 && s.outstandingShares > 0
+        ? Number(((tick.last * 1000 * s.outstandingShares - prevCmv) / s.bmv).toFixed(4))
+        : s.impact;
+
+    const nextDelta = Number((nextPrice - prevPrice).toFixed(2));
+    const nextPct =
+      prevPrice > 0 ? Number((((nextPrice - prevPrice) / prevPrice) * 100).toFixed(2)) : s.pct;
+    const nextValBil =
+      tick.value_bil && tick.value_bil > 0
+        ? Number(tick.value_bil.toFixed(2))
+        : tick.volume > 0
+        ? Number(((tick.last * tick.volume) / 1e6).toFixed(2))
+        : s.valueBil;
+
+    if (
+      Math.abs((s.price ?? 0) - nextPrice) < 1e-6 &&
+      Math.abs((s.impact ?? 0) - nextImpact) < 1e-6 &&
+      Math.abs((s.valueBil ?? 0) - (nextValBil ?? 0)) < 1e-4
+    ) {
+      return s;
+    }
+
+    changed = true;
+    if (tick.time && tick.time > latestTime) latestTime = tick.time;
+
+    return {
+      ...s,
+      price: nextPrice,
+      delta: nextDelta,
+      pct: nextPct,
+      impact: nextImpact,
+      valueBil: nextValBil,
+    };
+  });
+
+  if (!changed) return impactResp;
+
+  let positiveImpact = 0;
+  let negativeImpact = 0;
+  let positiveCount = 0;
+  let negativeCount = 0;
+  let flatCount = 0;
+
+  for (const s of nextStocks) {
+    if (s.impact > 0.0005) {
+      positiveImpact += s.impact;
+      positiveCount++;
+    } else if (s.impact < -0.0005) {
+      negativeImpact += s.impact;
+      negativeCount++;
+    } else {
+      flatCount++;
+    }
+  }
+
+  const sortedStocks = [...nextStocks].sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+  const topPositive = sortedStocks
+    .filter((s) => s.impact > 0)
+    .sort((a, b) => b.impact - a.impact)
+    .slice(0, 15);
+  const topNegative = sortedStocks
+    .filter((s) => s.impact < 0)
+    .sort((a, b) => a.impact - b.impact)
+    .slice(0, 15);
+
+  return {
+    ...impactResp,
+    isLiveWs: hasSsiWs || impactResp.isLiveWs,
+    source:
+      hasSsiWs && impactResp.source && !String(impactResp.source).includes('SSI WS')
+        ? `${impactResp.source} + SSI WS`
+        : impactResp.source,
+    syncTime: latestTime,
+    summary: {
+      netImpact: Number((positiveImpact + negativeImpact).toFixed(2)),
+      positiveImpact: Number(positiveImpact.toFixed(2)),
+      negativeImpact: Number(negativeImpact.toFixed(2)),
+      positiveCount,
+      negativeCount,
+      flatCount,
+    },
+    topPositive,
+    topNegative,
+    stocks: sortedStocks,
+  };
+}
+

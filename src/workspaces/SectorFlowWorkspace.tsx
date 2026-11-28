@@ -3,6 +3,7 @@ import { Banknote, Compass, Download, RefreshCw } from 'lucide-react';
 import { INDUSTRY_GROUPS, MA_WINDOWS } from '../shared/constants';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
 import { patchSectorMaWithTicks } from '../utils/livePatch';
+import { DateInput } from '../components/DateInput';
 import {
   FieldLabel,
   LoadingBar,
@@ -20,6 +21,7 @@ import {
   colorSignedClass,
   colorStatusClass,
   downloadCsv,
+  fmtDisplayDateOrTime,
   fmtNum,
   fmtSigned,
   vnTodayIso,
@@ -216,12 +218,7 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
               </div>
               <div className="md:col-span-2">
                 <FieldLabel label="Ngày tra cứu">
-                  <input
-                    type="date"
-                    value={maAsof}
-                    onChange={(e) => setMaAsof(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={maAsof} onChange={setMaAsof} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-3">
@@ -261,7 +258,7 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
                     <span className="inline-flex items-center gap-1 font-semibold font-mono text-emerald-600 dark:text-emerald-400">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                       SSI WS Live
-                      {secMaRes.syncTime ? ` (${secMaRes.syncTime})` : ''}
+                      {secMaRes.syncTime ? ` (${fmtDisplayDateOrTime(secMaRes.syncTime)})` : ''}
                     </span>
                   </>
                 )}
@@ -395,12 +392,7 @@ export const SectorFlowWorkspace: React.FC<Props> = ({ isActive = true }) => {
               </div>
               <div className="md:col-span-2">
                 <FieldLabel label="Ngày kết thúc">
-                  <input
-                    type="date"
-                    value={mfDate}
-                    onChange={(e) => setMfDate(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={mfDate} onChange={setMfDate} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">

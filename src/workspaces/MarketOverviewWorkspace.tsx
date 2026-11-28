@@ -10,10 +10,12 @@ import {
   Snowflake,
 } from 'lucide-react';
 import { ALL_MAIN_INDICES, getVnTreemapColor } from '../shared/constants';
+import { DateInput } from '../components/DateInput';
 import { PlotlyChart } from '../components/PlotlyChart';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
 import { useTheme } from '../context/ThemeContext';
 import { patchIndicesWithTicks, patchTreemapWithTicks } from '../utils/livePatch';
+import { VnIndexImpactPanel } from '../components/VnIndexImpactPanel';
 import { ForeignTradingPanel } from './ForeignTradingPanel';
 import {
   ErrorBanner,
@@ -33,6 +35,7 @@ import {
   colorPctWeakClass,
   colorSignedClass,
   colorStatusClass,
+  fmtDisplayDateOrTime,
   fmtNum,
   fmtSigned,
   vnTodayIso,
@@ -134,6 +137,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     marketTotal?: MarketTotalSummary | null;
   }>({});
   const [idxLoading, setIdxLoading] = useState(false);
+  const [idxRefreshSig, setIdxRefreshSig] = useState(0);
 
   const loadIndices = useCallback(
     async (forceRefresh = false, silent = false) => {
@@ -697,12 +701,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
               <div className="md:col-span-2">
                 <FieldLabel label="Ngày giao dịch">
-                  <input
-                    type="date"
-                    value={idxDate}
-                    onChange={(e) => setIdxDate(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={idxDate} onChange={setIdxDate} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-8">
@@ -731,7 +730,10 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               </div>
               <div className="md:col-span-2">
                 <PrimaryButton
-                  onClick={() => loadIndices(true, false)}
+                  onClick={() => {
+                    loadIndices(true, false);
+                    setIdxRefreshSig((n) => n + 1);
+                  }}
                   loading={idxLoading}
                   className="w-full"
                 >
@@ -809,7 +811,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                         {' '}
                         · Đồng bộ:{' '}
                         <span className="font-mono text-slate-700 dark:text-slate-300">
-                          {idxMeta.syncTime}
+                          {fmtDisplayDateOrTime(idxMeta.syncTime)}
                         </span>
                       </>
                     )}
@@ -905,6 +907,14 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               )}
             </>
           )}
+
+          {selectedIndices.includes('VNINDEX') && (
+            <VnIndexImpactPanel
+              date={idxDate}
+              isActive={isActive && subTab === 'indices'}
+              refreshSignal={idxRefreshSig}
+            />
+          )}
         </div>
       )}
 
@@ -953,12 +963,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
 
               <div className="lg:col-span-2">
                 <FieldLabel label="Ngày giao dịch">
-                  <input
-                    type="date"
-                    value={liqDate}
-                    onChange={(e) => setLiqDate(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={liqDate} onChange={setLiqDate} />
                 </FieldLabel>
               </div>
 
@@ -1221,12 +1226,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
               </div>
               <div className="md:col-span-3">
                 <FieldLabel label="Ngày bản đồ nhiệt">
-                  <input
-                    type="date"
-                    value={tmDate}
-                    onChange={(e) => setTmDate(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={tmDate} onChange={setTmDate} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-3">
@@ -1276,8 +1276,8 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
                 <span className="text-slate-300 dark:text-slate-700">·</span>
                 <span>
                   {tmResp.mode === 'live'
-                    ? `Trực tiếp (${tmResp.syncTime})`
-                    : `EOD ${tmResp.tradeDateDisplay || tmResp.tradeDate}`}
+                    ? `Trực tiếp (${fmtDisplayDateOrTime(tmResp.syncTime)})`
+                    : `EOD ${tmResp.tradeDateDisplay || fmtDisplayDateOrTime(tmResp.tradeDate)}`}
                 </span>
                 <span className="text-slate-300 dark:text-slate-700">·</span>
                 <span>{tmResp.totalSymbols ?? tmResp.rows?.length ?? 0} mã</span>
@@ -1326,12 +1326,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
             <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
               <div className="md:col-span-3">
                 <FieldLabel label="Ngày phân tích">
-                  <input
-                    type="date"
-                    value={maDate}
-                    onChange={(e) => setMaDate(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={maDate} onChange={setMaDate} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">

@@ -11,8 +11,10 @@ import {
   Zap,
 } from 'lucide-react';
 import { INDUSTRY_GROUPS } from '../shared/constants';
+import { DateInput } from '../components/DateInput';
 import { DynamicOhlcChart } from '../components/DynamicOhlcChart';
 import { PlotlyChart } from '../components/PlotlyChart';
+import { RadarEodPanel } from '../components/RadarEodPanel';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
 import { patchOhlcBarsWithTick, patchStockRowsWithTicks } from '../utils/livePatch';
 import {
@@ -28,12 +30,9 @@ import {
 } from '../components/UiPrimitives';
 import {
   addDaysIso,
-  colorPctStrengthClass,
   colorRsClass,
   colorSignedClass,
   colorStatusClass,
-  colorVolScoreClass,
-  fmtInt,
   fmtNum,
   fmtSigned,
   vnTodayIso,
@@ -51,29 +50,6 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
     const raw = catalog?.industries?.length ? catalog.industries : INDUSTRY_GROUPS;
     return raw.filter((g) => g !== 'Chỉ số');
   }, [catalog]);
-
-  // --- 3.1 Radar EOD ---
-  const [maFast, setMaFast] = useState(20);
-  const [maMid, setMaMid] = useState(50);
-  const [minVol, setMinVol] = useState(100_000);
-  const [useFtd, setUseFtd] = useState(true);
-  const [ftdMode, setFtdMode] = useState(0);
-  const [radarRes, setRadarRes] = useState<any>(null);
-  const [radarLoading, setRadarLoading] = useState(false);
-
-  const runRadar = async () => {
-    setRadarLoading(true);
-    try {
-      const resp = await fetch('/api/radar-eod', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maFast, maMid, minVol, useFtd, ftdMode }),
-      });
-      if (resp.ok) setRadarRes(await resp.json());
-    } finally {
-      setRadarLoading(false);
-    }
-  };
 
   // --- 3.2 Minervini & VCP Pro ---
   const [minStart, setMinStart] = useState(() => addDaysIso(today, -365));
@@ -119,9 +95,6 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
   }, [minRes, diagSym, liveAuto, ticks]);
 
   const activeScreenerSymbols = useMemo(() => {
-    if (subTab === 'radar' && radarRes?.stocks?.length) {
-      return radarRes.stocks.map((s: any) => String(s.symbol || '')).filter(Boolean);
-    }
     if (subTab === 'minervini') {
       const syms: string[] = [];
       if (minRes?.screened?.length) {
@@ -131,21 +104,12 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
       return syms.filter(Boolean);
     }
     return [];
-  }, [subTab, radarRes, minRes, diagSym]);
+  }, [subTab, minRes, diagSym]);
 
   useSubscribeSymbols(
     activeScreenerSymbols,
     isActive && liveAuto && activeScreenerSymbols.length > 0
   );
-
-  useEffect(() => {
-    if (!liveAuto || !isActive || subTab !== 'radar') return;
-    setRadarRes((prev: any) => {
-      if (!prev?.stocks?.length) return prev;
-      const nextStocks = patchStockRowsWithTicks(prev.stocks, ticks);
-      return nextStocks === prev.stocks ? prev : { ...prev, stocks: nextStocks };
-    });
-  }, [tickVersion, ticks, liveAuto, isActive, subTab]);
 
   useEffect(() => {
     if (!liveAuto || !isActive || subTab !== 'minervini') return;
@@ -299,193 +263,7 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
       />
 
       {/* 3.1 RADAR EOD */}
-      {subTab === 'radar' && (
-        <div className="space-y-3.5">
-          <SectionCard className="p-3.5">
-            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
-              <div className="md:col-span-1">
-                <FieldLabel label="MA Nhanh">
-                  <input
-                    type="number"
-                    min={5}
-                    max={50}
-                    value={maFast}
-                    onChange={(e) => setMaFast(Number(e.target.value))}
-                    className={inputCls}
-                  />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-1">
-                <FieldLabel label="MA Trung">
-                  <input
-                    type="number"
-                    min={20}
-                    max={100}
-                    value={maMid}
-                    onChange={(e) => setMaMid(Number(e.target.value))}
-                    className={inputCls}
-                  />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-2">
-                <FieldLabel label="Min Vol">
-                  <input
-                    type="number"
-                    min={0}
-                    step={50000}
-                    value={minVol}
-                    onChange={(e) => setMinVol(Number(e.target.value))}
-                    className={inputCls}
-                  />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-2 flex items-center h-9">
-                <label className="inline-flex items-center gap-2 text-[13px] font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={useFtd}
-                    onChange={(e) => setUseFtd(e.target.checked)}
-                    className="w-4 h-4 rounded accent-sky-600"
-                  />
-                  Bật FTD
-                </label>
-              </div>
-              <div className="md:col-span-3">
-                <FieldLabel label="Chuẩn FTD">
-                  <select
-                    value={ftdMode}
-                    disabled={!useFtd}
-                    onChange={(e) => setFtdMode(Number(e.target.value))}
-                    className={inputCls}
-                  >
-                    <option value={0}>Nâng cao (Vol &gt; MA20)</option>
-                    <option value={1}>Tiêu chuẩn (Vol &gt; Hôm trước)</option>
-                  </select>
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-3">
-                <PrimaryButton onClick={runRadar} loading={radarLoading} className="w-full">
-                  {!radarLoading && <Radar className="w-4 h-4" />}
-                  Quét Thị Trường EOD
-                </PrimaryButton>
-              </div>
-            </div>
-          </SectionCard>
-
-          {radarLoading && <LoadingBar text="Đang quét Radar EOD toàn sàn từ SSI..." />}
-
-          {radarRes && (
-            <div className="space-y-3.5">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                <MetricCard label="Ngày Cập Nhật" value={radarRes.risk.date} />
-                <MetricCard label="Trạng Thái TT" value={radarRes.risk.phase} />
-                <MetricCard label="Tỷ Trọng KN" value={`${Math.round(radarRes.risk.target)}%`} />
-                <MetricCard label="Độ Sâu ĐC" value={`${fmtNum(radarRes.risk.dd, 1)}%`} />
-                <MetricCard
-                  label="Nỗ Lực Hồi Phục"
-                  value={
-                    radarRes.risk.isFtd
-                      ? 'Đạt FTD'
-                      : radarRes.risk.rally > 0
-                      ? `Ngày ${radarRes.risk.rally}`
-                      : 'Chưa tạo đáy'
-                  }
-                  deltaPositive={radarRes.risk.isFtd ? true : null}
-                />
-                <MetricCard label="Risk Score" value={fmtNum(radarRes.risk.risk, 1)} />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <SectionCard className="lg:col-span-4 p-3.5">
-                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
-                    <Trophy className="w-4 h-4 text-amber-500" />
-                    Top Ngành Dẫn Dắt
-                  </h4>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[13px] border-collapse">
-                      <thead className={tableHeadCls}>
-                        <tr className="text-left">
-                          <th className="py-2 px-2.5">Ngành</th>
-                          <th className="py-2 px-2.5 text-right">Sức Mạnh</th>
-                          <th className="py-2 px-2.5 text-right">Số Mã &gt; MA</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                        {radarRes.sectors.map((s: any) => (
-                          <tr key={s.industry} className={tableRowCls}>
-                            <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
-                              {s.industry}
-                            </td>
-                            <td
-                              className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorPctStrengthClass(
-                                s.strength
-                              )}`}
-                            >
-                              {fmtNum(s.strength, 1)}%
-                            </td>
-                            <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                              {s.ratioText}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </SectionCard>
-
-                <SectionCard className="lg:col-span-8 p-3.5">
-                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
-                    <TrendingUp className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                    Top Cổ Phiếu Nổi Bật
-                  </h4>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[13px] border-collapse">
-                      <thead className={tableHeadCls}>
-                        <tr className="text-left">
-                          <th className="py-2 px-2.5">Mã CP</th>
-                          <th className="py-2 px-2.5">Ngành</th>
-                          <th className="py-2 px-2.5 text-right">Giá</th>
-                          <th className="py-2 px-2.5 text-right">Volume</th>
-                          <th className="py-2 px-2.5 text-right">Hệ Số Vol</th>
-                          <th className="py-2 px-2.5">Tín Hiệu</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                        {radarRes.stocks.map((st: any) => (
-                          <tr key={st.symbol} className={tableRowCls}>
-                            <td className="py-2 px-2.5 font-bold font-mono text-slate-900 dark:text-slate-100">
-                              {st.symbol}
-                            </td>
-                            <td className="py-2 px-2.5 text-slate-600 dark:text-slate-400">
-                              {st.industry}
-                            </td>
-                            <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-800 dark:text-slate-200">
-                              {fmtNum(st.price, 2)}
-                            </td>
-                            <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-300">
-                              {fmtInt(st.volume)}
-                            </td>
-                            <td
-                              className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorVolScoreClass(
-                                st.volRatio
-                              )}`}
-                            >
-                              {fmtNum(st.volRatio, 2)}x
-                            </td>
-                            <td className={`py-2 px-2.5 ${colorStatusClass(st.signal)}`}>
-                              {st.signal}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </SectionCard>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {subTab === 'radar' && <RadarEodPanel isActive={isActive && subTab === 'radar'} />}
 
       {/* 3.2 MINERVINI & VCP PRO */}
       {subTab === 'minervini' && (
@@ -494,22 +272,12 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
               <div className="md:col-span-3">
                 <FieldLabel label="Từ ngày">
-                  <input
-                    type="date"
-                    value={minStart}
-                    onChange={(e) => setMinStart(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={minStart} onChange={setMinStart} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-3">
                 <FieldLabel label="Đến ngày">
-                  <input
-                    type="date"
-                    value={minEnd}
-                    onChange={(e) => setMinEnd(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={minEnd} onChange={setMinEnd} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">
@@ -887,22 +655,12 @@ export const BreakoutScreenerWorkspace: React.FC<Props> = ({ isActive = true }) 
               </div>
               <div className="md:col-span-2">
                 <FieldLabel label="Từ ngày">
-                  <input
-                    type="date"
-                    value={gStart}
-                    onChange={(e) => setGStart(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={gStart} onChange={setGStart} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">
                 <FieldLabel label="Đến ngày">
-                  <input
-                    type="date"
-                    value={gEnd}
-                    onChange={(e) => setGEnd(e.target.value)}
-                    className={inputCls}
-                  />
+                  <DateInput value={gEnd} onChange={setGEnd} />
                 </FieldLabel>
               </div>
               <div className="md:col-span-2">

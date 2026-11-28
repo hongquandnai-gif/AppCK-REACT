@@ -9,6 +9,37 @@ export function addDaysIso(dateStr: string, deltaDays: number): string {
   return dt.toISOString().slice(0, 10);
 }
 
+export function fmtIsoToDdMmYyyy(isoDate: string | null | undefined): string {
+  if (!isoDate) return '';
+  const m = String(isoDate).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return String(isoDate);
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+export function parseDdMmYyyyToIso(input: string): string | null {
+  const m = String(input || '').trim().match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (!m) return null;
+  const d = Number(m[1]);
+  const mo = Number(m[2]);
+  const y = Number(m[3]);
+  if (y < 1990 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) {
+    return null;
+  }
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+export function fmtDisplayDateOrTime(val: string | null | undefined): string {
+  if (!val) return '';
+  const s = String(val).trim();
+  const isoMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})(.*)$/);
+  if (isoMatch) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}${isoMatch[4]}`;
+  }
+  return s;
+}
+
 export function fmtNum(val: number | null | undefined, digits = 2): string {
   if (val === null || val === undefined || !Number.isFinite(val)) return '—';
   return val.toLocaleString('en-US', {

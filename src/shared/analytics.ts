@@ -43,7 +43,7 @@ export function buildHistoricalTreemap(
 
   return {
     mode: 'historical',
-    syncTime: tmDate,
+    syncTime: formatDdMmYyyy(tmDate),
     counts: { up: cntUp, down: cntDown, ref: cntRef },
     rows,
   };
@@ -469,7 +469,6 @@ export function buildGainers(
       if (b.low < lmin) lmin = b.low;
     }
     if (c0 > 0 && lmin > 0 && hmax > 0) {
-      const [y, m, d] = peakDate.split('-');
       rows.push({
         symbol: sym,
         industry: industry === 'Penny' ? 'Penny' : HARDCODED_HOSE_INDUSTRIES_MAPPING[sym] || 'Khác',
@@ -477,7 +476,7 @@ export function buildGainers(
         pctFromLow: Number((((cl - lmin) / lmin) * 100).toFixed(2)),
         pctFromHigh: Number((((cl - hmax) / hmax) * 100).toFixed(2)),
         amplitude: Number((((hmax - lmin) / c0) * 100).toFixed(2)),
-        peakDate: `${d}-${m}-${y}`,
+        peakDate: formatDdMmYyyy(peakDate),
       });
     }
   }
@@ -549,7 +548,7 @@ export function buildPortfolioEvaluation(
 
     return {
       symbol: sym,
-      buyDate: h.buy_date,
+      buyDate: formatDdMmYyyy(h.buy_date),
       buyPrice: bp,
       qty,
       daysHeld,

@@ -16,6 +16,7 @@ import {
   fetchFullStockCatalog,
   fetchIndexMarketStats,
   fetchSsiOhlcvWithMetaCached,
+  fetchVnIndexLeaderLaggard,
   getSsiWsManager,
   isSsiRestBlocked,
   isVnMarketHours,
@@ -488,10 +489,175 @@ app.get('/api/indices-live', async (req, res) => {
       indices: results,
       marketTotal,
       dataSource: sources.join(' / ') || 'VNDirect',
-      syncTime: wsMgr.lastUpdate || vnNowParts().hms,
+      syncTime:
+        wsMgr.lastUpdate && /^\d{4}-\d{2}-\d{2}$/.test(wsMgr.lastUpdate)
+          ? formatDdMmYyyy(wsMgr.lastUpdate)
+          : wsMgr.lastUpdate || vnNowParts().hms,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Indices live error' });
+  }
+});
+
+// 1.1A VNINDEX INDEX IMPACT BY STOCK (OFFICIAL LEADER/LAGGARD + LIVE SSI WS OVERLAY)
+app.get('/api/vnindex-impact', async (req, res) => {
+  try {
+    const today = vnTodayStr();
+    const requestedDate = String(req.query.date || today);
+    const refresh = req.query.refresh === '1';
+    if (refresh) clearAllCaches();
+
+    const [catalog, leaderRecs, hoseBoardRes] = await Promise.all([
+      fetchFullStockCatalog(),
+      fetchVnIndexLeaderLaggard(refresh),
+      fetchExchangeBoardWithFallback('HOSE', requestedDate, false),
+    ]);
+
+    if (!leaderRecs.length) {
+      return res.json({
+        indexCode: 'VNINDEX',
+        empty: true,
+        requestedDate,
+        resolvedDate: requestedDate,
+        resolvedDateDisplay: formatDdMmYyyy(requestedDate),
+        resolvedDateShort: formatDdMm(requestedDate),
+        source: 'VNDirect',
+        isLiveWs: false,
+        liveWsCount: 0,
+        syncTime: vnNowParts().hms,
+        summary: {
+          netImpact: 0,
+          positiveImpact: 0,
+          negativeImpact: 0,
+          positiveCount: 0,
+          negativeCount: 0,
+          flatCount: 0,
+        },
+        topPositive: [],
+        topNegative: [],
+        stocks: [],
+      });
+    }
+
+    const leaderDate = leaderRecs[0].tradingDate;
+    const isHistorical = requestedDate < leaderDate && Boolean(hoseBoardRes?.tradeDate);
+    const resolvedDate = isHistorical ? hoseBoardRes.tradeDate : leaderDate;
+    const board = hoseBoardRes?.board || {};
+    const wsSnap = resolvedDate === today ? wsMgr.getLiveWsSnapshot() : {};
+
+    let liveWsCount = 0;
+    let latestWsTime = '';
+
+    const stocks = leaderRecs.map((rec) => {
+      const meta = catalog.stocks[rec.code];
+      const brTick = board[rec.code];
+      const wsTick = resolvedDate === today ? wsSnap[rec.code] : undefined;
+
+      let price = rec.lastPrice;
+      let prevPrice = rec.prevPrice;
+      let prevCmv = rec.prevCmv;
+      let impact = rec.contributionScore;
+      let valueBil = brTick?.value_bil && brTick.value_bil > 0 ? brTick.value_bil : 0;
+
+      if (isHistorical) {
+        if (brTick && brTick.last > 0) {
+          price = brTick.last;
+          prevPrice = brTick.ref && brTick.ref > 0 ? brTick.ref : price - (brTick.delta || 0);
+          prevCmv = prevPrice * 1000 * rec.outstandingShares;
+          impact = ((price - prevPrice) * 1000 * rec.outstandingShares) / rec.bmv;
+        } else {
+          impact = 0;
+        }
+      } else if (wsTick && Number.isFinite(wsTick.last) && wsTick.last > 0) {
+        liveWsCount++;
+        if (wsTick.time && wsTick.time > latestWsTime) latestWsTime = wsTick.time;
+        price = wsTick.last;
+        if (wsTick.ref && wsTick.ref > 0 && prevCmv <= 0) {
+          prevPrice = wsTick.ref;
+          prevCmv = prevPrice * 1000 * rec.outstandingShares;
+        }
+        impact = (price * 1000 * rec.outstandingShares - prevCmv) / rec.bmv;
+        if (wsTick.value_bil && wsTick.value_bil > 0) {
+          valueBil = wsTick.value_bil;
+        } else if (wsTick.volume > 0) {
+          valueBil = (wsTick.last * wsTick.volume) / 1e6;
+        }
+      }
+
+      const delta = prevPrice > 0 ? price - prevPrice : 0;
+      const pct = prevPrice > 0 ? (delta / prevPrice) * 100 : brTick?.pct ?? 0;
+
+      return {
+        symbol: rec.code,
+        companyName: meta?.companyName || rec.code,
+        industry: meta?.industry || 'Khác',
+        price: Number(price.toFixed(2)),
+        prevPrice: Number(prevPrice.toFixed(2)),
+        delta: Number(delta.toFixed(2)),
+        pct: Number(pct.toFixed(2)),
+        impact: Number(impact.toFixed(4)),
+        weight: Number(rec.weight.toFixed(2)),
+        valueBil: Number(valueBil.toFixed(2)),
+        outstandingShares: rec.outstandingShares,
+        prevCmv,
+        bmv: rec.bmv,
+      };
+    });
+
+    stocks.sort((a, b) => Math.abs(b.impact) - Math.abs(a.impact));
+
+    let positiveImpact = 0;
+    let negativeImpact = 0;
+    let positiveCount = 0;
+    let negativeCount = 0;
+    let flatCount = 0;
+    for (const s of stocks) {
+      if (s.impact > 0.0005) {
+        positiveImpact += s.impact;
+        positiveCount++;
+      } else if (s.impact < -0.0005) {
+        negativeImpact += s.impact;
+        negativeCount++;
+      } else {
+        flatCount++;
+      }
+    }
+
+    const topPositive = stocks
+      .filter((s) => s.impact > 0)
+      .sort((a, b) => b.impact - a.impact)
+      .slice(0, 15);
+    const topNegative = stocks
+      .filter((s) => s.impact < 0)
+      .sort((a, b) => a.impact - b.impact)
+      .slice(0, 15);
+
+    const isLiveWs = resolvedDate === today && liveWsCount > 0;
+    res.json({
+      indexCode: 'VNINDEX',
+      empty: false,
+      requestedDate,
+      resolvedDate,
+      resolvedDateDisplay: formatDdMmYyyy(resolvedDate),
+      resolvedDateShort: formatDdMm(resolvedDate),
+      source: isLiveWs ? 'VNDirect + SSI WS' : 'VNDirect',
+      isLiveWs,
+      liveWsCount,
+      syncTime: latestWsTime || hoseBoardRes?.syncTime || vnNowParts().hms,
+      summary: {
+        netImpact: Number((positiveImpact + negativeImpact).toFixed(2)),
+        positiveImpact: Number(positiveImpact.toFixed(2)),
+        negativeImpact: Number(negativeImpact.toFixed(2)),
+        positiveCount,
+        negativeCount,
+        flatCount,
+      },
+      topPositive,
+      topNegative,
+      stocks,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'VNINDEX impact error' });
   }
 });
 
@@ -1550,7 +1716,7 @@ app.post('/api/sector-ma', async (req, res) => {
       return res.json({
         mode: 'all',
         liveWsCount,
-        syncTime: liveWsCount > 0 ? vnNowParts().hms : asOfDate,
+        syncTime: liveWsCount > 0 ? vnNowParts().hms : formatDdMmYyyy(asOfDate),
         rows,
         stockSnapshots,
       });
@@ -1596,7 +1762,7 @@ app.post('/api/sector-ma', async (req, res) => {
     res.json({
       mode: 'group',
       liveWsCount,
-      syncTime: liveWsCount > 0 ? vnNowParts().hms : asOfDate,
+      syncTime: liveWsCount > 0 ? vnNowParts().hms : formatDdMmYyyy(asOfDate),
       rows: rows.map(({ _score, ...rest }) => rest),
     });
   } catch (err: any) {
@@ -1721,6 +1887,10 @@ app.post('/api/radar-eod', async (req, res) => {
       rally: 0,
       isFtd: false,
       risk: 0,
+      distDays: 0,
+      vnindexClose: 0,
+      vnindexPct: 0,
+      belowMa200: false,
     };
 
     if (vni && vni.length) {
@@ -1762,7 +1932,9 @@ app.post('/api/radar-eod', async (req, res) => {
         : getTargetExposureFromRisk(ddRes.riskScore);
       const ma200Arr = rollingMean(vniCloses, 200, 200);
       const ma200Last = ma200Arr[ma200Arr.length - 1];
-      const below200 = ma200Last !== null && vniCloses[vniCloses.length - 1] < ma200Last;
+      const lastClose = vniCloses[vniCloses.length - 1];
+      const prevClose = vniCloses.length > 1 ? vniCloses[vniCloses.length - 2] : lastClose;
+      const below200 = ma200Last !== null && lastClose < ma200Last;
 
       riskInfo = {
         date: formatDdMmYyyy(vni[vni.length - 1].date),
@@ -1772,6 +1944,11 @@ app.post('/api/radar-eod', async (req, res) => {
         rally: ftdState.rally_attempt_count,
         isFtd: ftdState.is_confirmed_uptrend,
         risk: Number(ddRes.riskScore.toFixed(1)),
+        distDays: ddRes.dd,
+        vnindexClose: Number(lastClose.toFixed(2)),
+        vnindexPct:
+          prevClose > 0 ? Number((((lastClose - prevClose) / prevClose) * 100).toFixed(2)) : 0,
+        belowMa200: below200,
       };
     }
 
@@ -1799,18 +1976,23 @@ app.post('/api/radar-eod', async (req, res) => {
       return {
         industry: sec,
         strength: Number(((cntUp / sList.length) * 100).toFixed(1)),
+        upCount: cntUp,
+        totalCount: sList.length,
         ratioText: `${cntUp}/${sList.length}`,
       };
     });
-    sectors.sort((a, b) => b.strength - a.strength);
+    sectors.sort((a, b) => b.strength - a.strength || b.upCount - a.upCount);
 
     const stocksRaw = [];
+    let totalScanned = 0;
     for (const [sym, bars] of Object.entries(dfs)) {
       if (sym === 'VNINDEX' || bars.length < 200) continue;
+      totalScanned++;
       const closes = bars.map((b) => b.close);
       const vols = bars.map((b) => b.volume);
       const lastIdx = bars.length - 1;
       const c = closes[lastIdx];
+      const prevC = lastIdx > 0 ? closes[lastIdx - 1] : c;
       const v = vols[lastIdx];
       const maf = rollingMean(closes, maFast, maFast)[lastIdx];
       const mam = rollingMean(closes, maMid, maMid)[lastIdx];
@@ -1822,12 +2004,20 @@ app.post('/api/radar-eod', async (req, res) => {
         const vSc = v / vma;
         const brk = v > minVol && vSc > 1.0;
         const sig = full && brk ? 'ĐẠT (Full)' : full ? 'Chờ Vol' : brk ? 'Nổ Vol (Hồi)' : 'Tích lũy';
+        const changePct = prevC > 0 ? ((c - prevC) / prevC) * 100 : 0;
+        const pctAboveMaFast = maf > 0 ? ((c - maf) / maf) * 100 : 0;
+        const valueBil = (c * v) / 1e6;
         stocksRaw.push({
           symbol: sym,
+          companyName: catalog.stocks[sym]?.companyName || sym,
           industry: industryMap[sym] || 'Khác',
           price: Number(c.toFixed(2)),
+          changePct: Number(changePct.toFixed(2)),
           volume: Math.round(v),
+          valueBil: Number(valueBil.toFixed(2)),
           volRatio: Number(vSc.toFixed(2)),
+          pctAboveMaFast: Number(pctAboveMaFast.toFixed(2)),
+          trendAligned: full,
           signal: sig,
           _full: full ? 1 : 0,
         });
@@ -1835,9 +2025,28 @@ app.post('/api/radar-eod', async (req, res) => {
     }
 
     stocksRaw.sort((a, b) => b._full - a._full || b.volRatio - a.volRatio);
-    const stocks = stocksRaw.slice(0, 50).map(({ _full, ...rest }) => rest);
+    const fullCount = stocksRaw.filter((s) => s.signal === 'ĐẠT (Full)').length;
+    const volBreakCount = stocksRaw.filter((s) => s.signal === 'Nổ Vol (Hồi)').length;
+    const waitVolCount = stocksRaw.filter((s) => s.signal === 'Chờ Vol').length;
+    const accumCount = stocksRaw.filter((s) => s.signal === 'Tích lũy').length;
+    const stocks = stocksRaw.slice(0, 80).map(({ _full, ...rest }) => rest);
 
-    res.json({ risk: riskInfo, sectors, stocks });
+    res.json({
+      risk: riskInfo,
+      sectors,
+      stocks,
+      meta: {
+        totalScanned,
+        qualifiedCount: stocksRaw.length,
+        fullCount,
+        volBreakCount,
+        waitVolCount,
+        accumCount,
+        maFast,
+        maMid,
+        minVol,
+      },
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Radar EOD error' });
   }
@@ -1909,7 +2118,6 @@ app.post('/api/gainers', async (req, res) => {
         if (b.low < lmin) lmin = b.low;
       }
       if (c0 > 0 && lmin > 0 && hmax > 0) {
-        const [y, m, d] = peakDate.split('-');
         const meta = catalog.stocks[sym];
         rows.push({
           symbol: sym,
@@ -1919,7 +2127,7 @@ app.post('/api/gainers', async (req, res) => {
           pctFromLow: Number((((cl - lmin) / lmin) * 100).toFixed(2)),
           pctFromHigh: Number((((cl - hmax) / hmax) * 100).toFixed(2)),
           amplitude: Number((((hmax - lmin) / c0) * 100).toFixed(2)),
-          peakDate: `${d}-${m}-${y}`,
+          peakDate: formatDdMmYyyy(peakDate),
         });
       }
     }
@@ -2241,7 +2449,7 @@ app.post('/api/portfolio/evaluate', async (req, res) => {
 
       return {
         symbol: sym,
-        buyDate: h.buy_date,
+        buyDate: formatDdMmYyyy(h.buy_date),
         buyPrice: bp,
         qty,
         daysHeld,

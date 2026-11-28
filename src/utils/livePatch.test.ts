@@ -8,6 +8,7 @@ import {
   patchSectorMaWithTicks,
   patchStockRowsWithTicks,
   patchTreemapWithTicks,
+  patchVnIndexImpactWithTicks,
   type LiveTickDto,
 } from './livePatch';
 
@@ -351,3 +352,86 @@ test('patchForeignTradingWithTicks updates live foreign buy/sell, sectors, and t
   assert.equal(next.sectors[0].netValBil, 35);
   assert.equal(next.summary.buyStocksCount, 1);
 });
+
+test('patchVnIndexImpactWithTicks recalculates exact VNINDEX contribution points on SSI WS ticks', () => {
+  const bmv = 5_000_000_000_000;
+  const shares = 1_000_000_000;
+  const impactResp = {
+    indexCode: 'VNINDEX',
+    source: 'VNDirect',
+    isLiveWs: false,
+    syncTime: '14:00:00',
+    summary: { netImpact: 0, positiveImpact: 0, negativeImpact: 0, positiveCount: 0, negativeCount: 0, flatCount: 2 },
+    topPositive: [],
+    topNegative: [],
+    stocks: [
+      {
+        symbol: 'VCB',
+        companyName: 'Vietcombank',
+        industry: 'Ngân hàng',
+        price: 50.0,
+        prevPrice: 50.0,
+        delta: 0,
+        pct: 0,
+        impact: 0,
+        weight: 8.5,
+        valueBil: 100,
+        outstandingShares: shares,
+        prevCmv: 50.0 * 1000 * shares,
+        bmv,
+      },
+      {
+        symbol: 'FPT',
+        companyName: 'FPT Corp',
+        industry: 'Công nghệ Thông tin',
+        price: 100.0,
+        prevPrice: 100.0,
+        delta: 0,
+        pct: 0,
+        impact: 0,
+        weight: 4.2,
+        valueBil: 80,
+        outstandingShares: shares,
+        prevCmv: 100.0 * 1000 * shares,
+        bmv,
+      },
+    ],
+  };
+
+  const patched = patchVnIndexImpactWithTicks(impactResp, {
+    VCB: {
+      symbol: 'VCB',
+      last: 52.5,
+      ref: 50.0,
+      delta: 2.5,
+      pct: 5.0,
+      volume: 3_000_000,
+      value_bil: 155,
+      time: '14:15:10',
+      liveSource: 'SSI_WS',
+    },
+    FPT: {
+      symbol: 'FPT',
+      last: 99.0,
+      ref: 100.0,
+      delta: -1.0,
+      pct: -1.0,
+      volume: 1_000_000,
+      value_bil: 99,
+      time: '14:15:12',
+      liveSource: 'SSI_WS',
+    },
+  });
+
+  assert.equal(patched.isLiveWs, true);
+  assert.equal(patched.source, 'VNDirect + SSI WS');
+  assert.equal(patched.syncTime, '14:15:12');
+  assert.equal(patched.summary.positiveImpact, 0.5);
+  assert.equal(patched.summary.negativeImpact, -0.2);
+  assert.equal(patched.summary.netImpact, 0.3);
+  assert.equal(patched.topPositive[0].symbol, 'VCB');
+  assert.equal(patched.topPositive[0].impact, 0.5);
+  assert.equal(patched.topNegative[0].symbol, 'FPT');
+  assert.equal(patched.topNegative[0].impact, -0.2);
+});
+
