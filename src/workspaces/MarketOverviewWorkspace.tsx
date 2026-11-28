@@ -2,15 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   BarChart2,
-  Flame,
   Globe,
   HeartPulse,
   LayoutGrid,
   RefreshCw,
-  Snowflake,
 } from 'lucide-react';
 import { ALL_MAIN_INDICES, getVnTreemapColor } from '../shared/constants';
 import { DateInput } from '../components/DateInput';
+import { MarketHealthPanel } from '../components/MarketHealthPanel';
 import { PlotlyChart } from '../components/PlotlyChart';
 import { useMarketStream, useSubscribeSymbols } from '../context/MarketStreamContext';
 import { useTheme } from '../context/ThemeContext';
@@ -31,10 +30,7 @@ import {
   tableRowCls,
 } from '../components/UiPrimitives';
 import {
-  colorPctStrengthClass,
-  colorPctWeakClass,
   colorSignedClass,
-  colorStatusClass,
   fmtDisplayDateOrTime,
   fmtNum,
   fmtSigned,
@@ -633,27 +629,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
     };
   }, [tmResp, tmSizeMode, tmExchange, isDark]);
 
-  // --- Sub-tab 1.3: Market Health & Distribution Days ---
-  const [maDate, setMaDate] = useState(today);
-  const [ddWin, setDdWin] = useState(25);
-  const [cancelReb, setCancelReb] = useState(6.0);
-  const [ma20Lag, setMa20Lag] = useState(1);
-  const [healthRes, setHealthRes] = useState<any>(null);
-  const [healthLoading, setHealthLoading] = useState(false);
-
-  const runHealthAnalysis = async () => {
-    setHealthLoading(true);
-    try {
-      const resp = await fetch('/api/market-health', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date: maDate, ddWin, cancelReb, ma20Lag }),
-      });
-      if (resp.ok) setHealthRes(await resp.json());
-    } finally {
-      setHealthLoading(false);
-    }
-  };
+  // --- Sub-tab 1.3: Market Health & Distribution Days is handled by MarketHealthPanel ---
 
   const toggleIndex = (sym: string) => {
     setSelectedIndices((prev) =>
@@ -1321,222 +1297,7 @@ export const MarketOverviewWorkspace: React.FC<Props> = ({ isActive = true }) =>
       )}
 
       {subTab === 'health' && (
-        <div className="space-y-3.5">
-          <SectionCard className="p-3.5">
-            <div className="grid grid-cols-2 md:grid-cols-12 gap-3 items-end">
-              <div className="md:col-span-3">
-                <FieldLabel label="Ngày phân tích">
-                  <DateInput value={maDate} onChange={setMaDate} />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-2">
-                <FieldLabel label="Cửa sổ DD">
-                  <input
-                    type="number"
-                    min={10}
-                    max={60}
-                    value={ddWin}
-                    onChange={(e) => setDdWin(Number(e.target.value))}
-                    className={inputCls}
-                  />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-2">
-                <FieldLabel label="Xóa DD (%)">
-                  <input
-                    type="number"
-                    min={3}
-                    max={15}
-                    step={0.5}
-                    value={cancelReb}
-                    onChange={(e) => setCancelReb(Number(e.target.value))}
-                    className={inputCls}
-                  />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-2">
-                <FieldLabel label="Độ trễ MA20">
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={ma20Lag}
-                    onChange={(e) => setMa20Lag(Number(e.target.value))}
-                    className={inputCls}
-                  />
-                </FieldLabel>
-              </div>
-              <div className="md:col-span-3">
-                <PrimaryButton
-                  onClick={runHealthAnalysis}
-                  loading={healthLoading}
-                  className="w-full"
-                >
-                  {!healthLoading && <HeartPulse className="w-4 h-4" />}
-                  Phân Tích Thị Trường
-                </PrimaryButton>
-              </div>
-            </div>
-          </SectionCard>
-
-          {healthLoading && (
-            <LoadingBar text="Đang đếm ngày phân phối các chỉ số và quét sức mạnh các nhóm ngành..." />
-          )}
-
-          {healthRes && (
-            <div className="space-y-3.5">
-              <div className="space-y-2">
-                {healthRes.summaries.map((s: any) => (
-                  <div
-                    key={s.index}
-                    className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-[13px] text-slate-700 dark:text-slate-300 flex flex-wrap items-center gap-x-2 gap-y-1"
-                  >
-                    <strong className="font-mono text-slate-900 dark:text-slate-50">
-                      {s.index}
-                    </strong>
-                    <span className="text-slate-300 dark:text-slate-700">·</span>
-                    <span>
-                      Phân phối <strong className="font-mono">{s.dd}</strong> ({s.ddDates})
-                    </span>
-                    <span className="text-slate-300 dark:text-slate-700">·</span>
-                    <span>
-                      Stalling <strong className="font-mono">{s.stall}</strong>
-                    </span>
-                    <span className="text-slate-300 dark:text-slate-700">·</span>
-                    <span>
-                      Churning <strong className="font-mono">{s.churn}</strong>
-                    </span>
-                    {s.extra && (
-                      <>
-                        <span className="text-slate-300 dark:text-slate-700">·</span>
-                        <span>
-                          Rủi ro:{' '}
-                          <strong className="font-mono text-slate-900 dark:text-slate-100">
-                            {s.extra.riskScore}
-                          </strong>
-                        </span>
-                        <span className="text-slate-300 dark:text-slate-700">→</span>
-                        <span>
-                          Tỷ trọng:{' '}
-                          <strong className="font-mono text-sky-600 dark:text-sky-400">
-                            {s.extra.allocTxt}
-                          </strong>{' '}
-                          <span className="text-slate-500 dark:text-slate-400">
-                            ({s.extra.reason})
-                          </span>
-                        </span>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <SectionCard className="lg:col-span-7 p-3.5">
-                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
-                    <Flame className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                    Nhóm Ngành Dẫn Dắt (&gt; 50% mã trên MA20)
-                  </h4>
-                  {healthRes.leaders.length ? (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-[13px] border-collapse">
-                        <thead className={tableHeadCls}>
-                          <tr>
-                            <th className="py-2 px-2.5 text-left">Ngành</th>
-                            <th className="py-2 px-2.5 text-right">% &gt; MA20</th>
-                            <th className="py-2 px-2.5 text-right">Trước đó</th>
-                            <th className="py-2 px-2.5 text-right">Thay đổi</th>
-                            <th className="py-2 px-2.5 text-left">Cảnh báo</th>
-                            <th className="py-2 px-2.5 text-right">Số mã</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                          {healthRes.leaders.map((r: any) => (
-                            <tr key={r.industry} className={tableRowCls}>
-                              <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
-                                {r.industry}
-                              </td>
-                              <td
-                                className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorPctStrengthClass(
-                                  r.pctAboveMa20
-                                )}`}
-                              >
-                                {fmtNum(r.pctAboveMa20, 1)}%
-                              </td>
-                              <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                                {fmtNum(r.prevPct, 1)}%
-                              </td>
-                              <td
-                                className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorSignedClass(
-                                  r.change
-                                )}`}
-                              >
-                                {fmtSigned(r.change, 1, '%')}
-                              </td>
-                              <td className={`py-2 px-2.5 ${colorStatusClass(r.warning)}`}>
-                                {r.warning}
-                              </td>
-                              <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                                {r.count}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <p className="text-[13px] text-slate-500 dark:text-slate-400">
-                      Không có nhóm ngành nào đạt chuẩn dẫn dắt.
-                    </p>
-                  )}
-                </SectionCard>
-
-                <SectionCard className="lg:col-span-5 p-3.5">
-                  <h4 className="inline-flex items-center gap-2 font-bold text-[14.5px] text-slate-900 dark:text-slate-100 mb-2.5">
-                    <Snowflake className="w-4 h-4 text-sky-600 dark:text-sky-400" />
-                    Nhóm Ngành Suy Yếu (&gt; 50% mã dưới MA50)
-                  </h4>
-                  {healthRes.weak.length ? (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-[13px] border-collapse">
-                        <thead className={tableHeadCls}>
-                          <tr>
-                            <th className="py-2 px-2.5 text-left">Ngành</th>
-                            <th className="py-2 px-2.5 text-right">% &lt; MA50</th>
-                            <th className="py-2 px-2.5 text-right">Số mã</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
-                          {healthRes.weak.map((r: any) => (
-                            <tr key={r.industry} className={tableRowCls}>
-                              <td className="py-2 px-2.5 font-semibold text-slate-800 dark:text-slate-200">
-                                {r.industry}
-                              </td>
-                              <td
-                                className={`py-2 px-2.5 text-right font-mono tabular-nums ${colorPctWeakClass(
-                                  r.pctBelowMa50
-                                )}`}
-                              >
-                                {fmtNum(r.pctBelowMa50, 1)}%
-                              </td>
-                              <td className="py-2 px-2.5 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400">
-                                {r.count}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <p className="text-[13px] text-slate-500 dark:text-slate-400">
-                      Không có nhóm ngành nào suy yếu &gt; 50%.
-                    </p>
-                  )}
-                </SectionCard>
-              </div>
-            </div>
-          )}
-        </div>
+        <MarketHealthPanel isActive={isActive && subTab === 'health'} />
       )}
     </div>
   );

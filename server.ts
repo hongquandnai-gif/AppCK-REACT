@@ -1487,62 +1487,150 @@ app.get('/api/foreign-trading', async (req, res) => {
 app.post('/api/market-health', async (req, res) => {
   try {
     const maDate = String(req.body?.date || vnTodayStr());
-    const ddWin = Number(req.body?.ddWin ?? 25);
-    const cancelReb = Number(req.body?.cancelReb ?? 6.0);
-    const ma20Lag = Number(req.body?.ma20Lag ?? 1);
+    const ddWin = Math.max(10, Math.min(60, Math.round(Number(req.body?.ddWin ?? 25))));
+    const cancelReb = Math.max(2, Math.min(20, Number(req.body?.cancelReb ?? 6.0)));
+    const ma20Lag = Math.max(1, Math.min(20, Math.round(Number(req.body?.ma20Lag ?? 1))));
 
     const idxMap = await fetchBatchOhlcvSsi(
       ['VNINDEX', 'VN30', 'HNX', 'UPCOM'],
-      addDaysToDateStr(maDate, -365),
+      addDaysToDateStr(maDate, -420),
       maDate,
       'D',
       4
     );
 
+    let resolvedDate = maDate;
     const summaries = [];
     for (const idxName of ['VNINDEX', 'VN30', 'HNX', 'UPCOM']) {
       const bars = idxMap[idxName];
       if (bars && bars.length) {
+        const lastBar = bars[bars.length - 1];
+        const prevBar = bars.length > 1 ? bars[bars.length - 2] : null;
+        if (idxName === 'VNINDEX' && lastBar?.date) {
+          resolvedDate = lastBar.date;
+        }
+
         const resDd = computeDistributionDaysCore(bars, {
           window: ddWin,
           cancelReboundPct: cancelReb,
         });
-        const ddDates = resDd.details
-          .filter((d) => d.type === 'DD')
-          .slice(-8)
-          .map((d) => formatDdMm(d.date))
-          .join(', ') || '—';
+
+        const closes = bars.map((b) => b.close);
+        const close = lastBar.close;
+        const prevClose = prevBar?.close ?? close;
+        const changePct = prevClose > 0 ? ((close - prevClose) / prevClose) * 100 : 0;
+
+        const ma20Arr = rollingMean(closes, 20, 20);
+        const ma50Arr = rollingMean(closes, 50, 50);
+        const ma200Arr = rollingMean(closes, 200, 200);
+        const lastIdx = closes.length - 1;
+        const ma20 = ma20Arr[lastIdx];
+        const ma50 = ma50Arr[lastIdx];
+        const ma200 = ma200Arr[lastIdx];
+
+        const eventMap = new Map<string, 'DD' | 'STALL' | 'CHURN'>();
+        for (const d of resDd.details) {
+          eventMap.set(d.date, d.type);
+        }
+
+        const dateToBarIdx = new Map<string, number>();
+        bars.forEach((b, idx) => dateToBarIdx.set(b.date, idx));
+
+        const events = [...resDd.details]
+          .reverse()
+          .map((d) => {
+            const bIdx = dateToBarIdx.get(d.date) ?? -1;
+            const bar = bIdx >= 0 ? bars[bIdx] : null;
+            const pBar = bIdx > 0 ? bars[bIdx - 1] : null;
+            const pct =
+              bar && pBar && pBar.close > 0 ? ((bar.close - pBar.close) / pBar.close) * 100 : 0;
+            const volPct =
+              bar && pBar && pBar.volume > 0 ? ((bar.volume - pBar.volume) / pBar.volume) * 100 : 0;
+            const sessionsAgo = bIdx >= 0 ? lastIdx - bIdx : 0;
+            const sessionsLeft = Math.max(0, ddWin - sessionsAgo);
+            return {
+              date: d.date,
+              dateDisplay: formatDdMmYyyy(d.date),
+              type: d.type,
+              close: bar ? Number(bar.close.toFixed(2)) : 0,
+              changePct: Number(pct.toFixed(2)),
+              volume: bar ? Math.round(bar.volume) : 0,
+              volChangePct: Number(volPct.toFixed(1)),
+              sessionsAgo,
+              sessionsLeft,
+            };
+          });
+
+        const seriesLen = Math.min(bars.length, Math.max(ddWin + 20, 55));
+        const seriesStart = bars.length - seriesLen;
+        const series = [];
+        for (let i = seriesStart; i < bars.length; i++) {
+          const b = bars[i];
+          const p = i > 0 ? bars[i - 1] : null;
+          const pct = p && p.close > 0 ? ((b.close - p.close) / p.close) * 100 : 0;
+          const [y, m, day] = b.date.split('-');
+          series.push({
+            date: b.date,
+            label: `${day}/${m}/${y.slice(2)}`,
+            dateDisplay: formatDdMmYyyy(b.date),
+            close: Number(b.close.toFixed(2)),
+            ma20: ma20Arr[i] !== null ? Number(ma20Arr[i]!.toFixed(2)) : null,
+            ma50: ma50Arr[i] !== null ? Number(ma50Arr[i]!.toFixed(2)) : null,
+            changePct: Number(pct.toFixed(2)),
+            volume: Math.round(b.volume),
+            eventType: eventMap.get(b.date) || null,
+            inWindow: i >= bars.length - ddWin,
+          });
+        }
+
+        const ddDates =
+          resDd.details
+            .filter((d) => d.type === 'DD')
+            .slice(-8)
+            .map((d) => formatDdMmYyyy(d.date))
+            .join(', ') || '—';
+
+        const riskScoreNum = Number(resDd.riskScore.toFixed(1));
+        let targetExposure = Math.round(getTargetExposureFromRisk(resDd.riskScore) * 100);
+        let allocReason = `Theo điểm rủi ro (${riskScoreNum.toFixed(1)})`;
+        if (ma50 !== null && close < ma50) {
+          targetExposure = 0;
+          allocReason = 'Gãy MA50 · Ưu tiên phòng thủ';
+        } else if (resDd.dd >= 5 && ma20 !== null && close < ma20) {
+          targetExposure = 0;
+          allocReason = 'Phân phối ≥ 5 + Dưới MA20';
+        }
 
         let extra: { riskScore?: number; allocTxt?: string; reason?: string } | null = null;
         if (idxName === 'VNINDEX') {
-          const closes = bars.map((b) => b.close);
-          const close = closes[closes.length - 1];
-          const ma50Arr = rollingMean(closes, 50, 50);
-          const ma20Arr = rollingMean(closes, 20, 20);
-          const ma50 = ma50Arr[ma50Arr.length - 1];
-          const ma20 = ma20Arr[ma20Arr.length - 1];
-
-          let allocTxt = '';
-          let reason = '';
-          if (ma50 !== null && close < ma50) {
-            allocTxt = '0%';
-            reason = 'Gãy MA50';
-          } else if (resDd.dd >= 5 && ma20 !== null && close < ma20) {
-            allocTxt = '0%';
-            reason = 'Phân phối ≥ 5 + Dưới MA20';
-          } else {
-            allocTxt = `${Math.round(getTargetExposureFromRisk(resDd.riskScore) * 100)}%`;
-            reason = `Theo Risk Score (${resDd.riskScore.toFixed(1)})`;
-          }
-          extra = { riskScore: Number(resDd.riskScore.toFixed(1)), allocTxt, reason };
+          extra = {
+            riskScore: riskScoreNum,
+            allocTxt: `${targetExposure}%`,
+            reason: allocReason,
+          };
         }
 
         summaries.push({
           index: idxName,
+          close: Number(close.toFixed(2)),
+          prevClose: Number(prevClose.toFixed(2)),
+          changePct: Number(changePct.toFixed(2)),
+          dateDisplay: formatDdMmYyyy(lastBar.date),
+          ma20: ma20 !== null ? Number(ma20.toFixed(2)) : null,
+          ma50: ma50 !== null ? Number(ma50.toFixed(2)) : null,
+          ma200: ma200 !== null ? Number(ma200.toFixed(2)) : null,
+          aboveMa20: ma20 !== null ? close >= ma20 : null,
+          aboveMa50: ma50 !== null ? close >= ma50 : null,
+          aboveMa200: ma200 !== null ? close >= ma200 : null,
           dd: resDd.dd,
           ddDates,
           stall: resDd.stall,
           churn: resDd.churn,
+          riskScore: riskScoreNum,
+          targetExposure,
+          allocReason,
+          events,
+          series,
           extra,
         });
       }
@@ -1558,8 +1646,14 @@ app.post('/api/market-health', async (req, res) => {
     const syms = await resolveLiquidUniverse(rawSyms, 'HOSE', maDate, 260);
     const secDfs = await fetchBatchOhlcvSsi(syms, addDaysToDateStr(maDate, -180), maDate, 'D');
 
-    const secGroups = new Map<string, { tot: number; a20: number; b50: number; prevSum: number; prevCnt: number }>();
+    const secGroups = new Map<
+      string,
+      { tot: number; a20: number; a50: number; b50: number; prevSum: number; prevCnt: number }
+    >();
     const lag = Math.max(1, Math.round(ma20Lag));
+    let totalStocks = 0;
+    let totalAboveMa20 = 0;
+    let totalAboveMa50 = 0;
 
     for (const [s, bars] of Object.entries(secDfs)) {
       if (bars.length < 60 + lag) continue;
@@ -1567,11 +1661,29 @@ app.post('/api/market-health', async (req, res) => {
       const subC = bars.slice(-100).map((b) => b.close);
       const m20 = rollingMean(subC, 20, 20);
       const m50 = rollingMean(subC, 50, 50);
-      const g = secGroups.get(ind) || { tot: 0, a20: 0, b50: 0, prevSum: 0, prevCnt: 0 };
+      const g = secGroups.get(ind) || {
+        tot: 0,
+        a20: 0,
+        a50: 0,
+        b50: 0,
+        prevSum: 0,
+        prevCnt: 0,
+      };
       g.tot += 1;
+      totalStocks += 1;
       const lastIdx = subC.length - 1;
-      if (m20[lastIdx] !== null && subC[lastIdx] > m20[lastIdx]!) g.a20 += 1;
-      if (m50[lastIdx] !== null && subC[lastIdx] < m50[lastIdx]!) g.b50 += 1;
+      if (m20[lastIdx] !== null && subC[lastIdx] > m20[lastIdx]!) {
+        g.a20 += 1;
+        totalAboveMa20 += 1;
+      }
+      if (m50[lastIdx] !== null) {
+        if (subC[lastIdx] < m50[lastIdx]!) {
+          g.b50 += 1;
+        } else {
+          g.a50 += 1;
+          totalAboveMa50 += 1;
+        }
+      }
 
       const pStart = Math.max(0, subC.length - (lag + 1));
       const pEnd = subC.length - 1;
@@ -1589,35 +1701,63 @@ app.post('/api/market-health', async (req, res) => {
 
     const leaders: any[] = [];
     const weak: any[] = [];
+    const allSectors: any[] = [];
     for (const [k, v] of secGroups.entries()) {
       if (!v.tot) continue;
       const pctNow = (v.a20 / v.tot) * 100;
       const pctPrev = v.prevCnt ? (v.prevSum / v.prevCnt) * 100 : 0;
       const deltaPp = pctNow - pctPrev;
       const pctB50 = (v.b50 / v.tot) * 100;
+      const pctA50 = (v.a50 / v.tot) * 100;
+      const isWarning = pctPrev - pctNow >= 25;
+      const status: 'leader' | 'weak' | 'neutral' =
+        pctNow > 50 ? 'leader' : pctB50 > 50 ? 'weak' : 'neutral';
+
+      const row = {
+        industry: k,
+        pctAboveMa20: Number(pctNow.toFixed(1)),
+        prevPct: Number(pctPrev.toFixed(1)),
+        change: Number(deltaPp.toFixed(1)),
+        pctBelowMa50: Number(pctB50.toFixed(1)),
+        pctAboveMa50: Number(pctA50.toFixed(1)),
+        isWarning,
+        warning: isWarning ? 'Suy yếu nhanh' : '—',
+        count: v.tot,
+        aboveMa20Count: v.a20,
+        belowMa50Count: v.b50,
+        status,
+      };
+      allSectors.push(row);
+
       if (pctNow > 50) {
-        leaders.push({
-          industry: k,
-          pctAboveMa20: Number(pctNow.toFixed(1)),
-          prevPct: Number(pctPrev.toFixed(1)),
-          change: Number(deltaPp.toFixed(1)),
-          warning: pctPrev - pctNow >= 25 ? '⚠️ Suy yếu' : '—',
-          count: v.tot,
-        });
+        leaders.push(row);
       }
       if (pctB50 > 50) {
-        weak.push({
-          industry: k,
-          pctBelowMa50: Number(pctB50.toFixed(1)),
-          count: v.tot,
-        });
+        weak.push(row);
       }
     }
 
+    allSectors.sort((a, b) => b.pctAboveMa20 - a.pctAboveMa20);
     leaders.sort((a, b) => b.pctAboveMa20 - a.pctAboveMa20);
     weak.sort((a, b) => b.pctBelowMa50 - a.pctBelowMa50);
 
-    res.json({ summaries, leaders, weak });
+    const breadth = {
+      resolvedDateDisplay: formatDdMmYyyy(resolvedDate),
+      totalStocks,
+      aboveMa20Count: totalAboveMa20,
+      aboveMa20Pct: totalStocks > 0 ? Number(((totalAboveMa20 / totalStocks) * 100).toFixed(1)) : 0,
+      aboveMa50Count: totalAboveMa50,
+      aboveMa50Pct: totalStocks > 0 ? Number(((totalAboveMa50 / totalStocks) * 100).toFixed(1)) : 0,
+      totalSectors: allSectors.length,
+      leaderSectorsCount: leaders.length,
+      weakSectorsCount: weak.length,
+      warningSectorsCount: allSectors.filter((s) => s.isWarning).length,
+      ddWin,
+      cancelReb,
+      ma20Lag: lag,
+    };
+
+    res.json({ summaries, leaders, weak, allSectors, breadth });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Market health error' });
   }
